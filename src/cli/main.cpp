@@ -8,6 +8,7 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <set>
 #include <sstream>
 #include <thread>
 
@@ -807,6 +808,72 @@ int cmdMcp(const cli::Parsed&, const Globals& g) {
     return 0;
 }
 
+
+// Apply an explicit list of moves ([{"from": ..., "to": ...}]) through the journal.
+// Folders move as a unit (same drive only); nothing is ever overwritten.
+int cmdMoves(const cli::Parsed& p, const Globals& g) {
+    std::ifstream f(fromUtf8(p.positional[0]), std::ios::binary);
+    if (!f) throw std::runtime_error("cannot read " + p.positional[0]);
+    std::stringstream ss;
+    ss << f.rdbuf();
+    const Json list = Json::parse(ss.str());
+    FileSystem& fs = filesystem(g);
+
+    std::vector<JournalOp> ops, mkdirs;
+    std::set<std::string> newDirs, targets;
+    size_t problems = 0;
+    for (const auto& item : list.items()) {
+        const std::string from = resolvePath(g, item.get("from").asString());
+        const std::string to = resolvePath(g, item.get("to").asString());
+        DirEntry e, d;
+        std::string why;
+        if (fs.stat(from, e)) why = "source missing";
+        else if (!fs.stat(to, d)) why = "destination exists";
+        else if (!targets.insert(to).second) why = "two items want the same destination";
+        else if (to.rfind(from + std::string(1, fs.separator()), 0) == 0) why = "cannot move a folder into itself";
+        if (!why.empty()) {
+            ++problems;
+            std::fprintf(stderr, "skip: %s (%s)\n", from.c_str(), why.c_str());
+            continue;
+        }
+        for (std::string dir = fs.parentOf(to); !dir.empty() && fs.stat(dir, d) && newDirs.insert(dir).second; dir = fs.parentOf(dir)) {
+            JournalOp m;
+            m.action = Action::MakeDir;
+            m.src = dir;
+            mkdirs.push_back(m);
+        }
+        JournalOp op;
+        op.action = Action::Move;
+        op.src = from;
+        op.dst = to;
+        op.size = e.kind == NodeKind::File ? e.size : 0;
+        op.mtime = e.kind == NodeKind::File ? e.mtime : 0;
+        ops.push_back(op);
+    }
+    std::sort(mkdirs.begin(), mkdirs.end(), [](const JournalOp& a, const JournalOp& b) { return a.src.size() < b.src.size(); });
+    ops.insert(ops.begin(), mkdirs.begin(), mkdirs.end());
+
+    const size_t moves = ops.size() - mkdirs.size();
+    if (!g.json) std::printf("%zu moves · %zu new folders · %zu skipped\n", moves, mkdirs.size(), problems);
+    if (!p.has("apply")) {
+        if (!g.json) std::printf("Dry run. Add --apply to move.\n");
+        else std::cout << Json::object({{"moves", moves}, {"new_folders", mkdirs.size()}, {"skipped", problems}}).dump(2) << "\n";
+        return 0;
+    }
+    if (!p.has("yes") && !confirm("Move " + std::to_string(moves) + " items?")) return 1;
+    Journal journal(journalPath(g));
+    recoverJournal(journal, g.json);
+    const int64_t batch = journal.createBatch("organize", p.value("title", "Moves from " + p.positional[0]), fs.volumeName(), ops);
+    Executor ex(fs, journal);
+    const ExecResult r = runWithProgress(ex, g.json, [&] { return ex.run(batch); });
+    if (g.json) std::cout << batchJson(journal.batch(batch)).dump(2) << "\n";
+    else {
+        printResult("Done", r);
+        std::printf("Batch %lld — undo with `storagectl undo %lld`\n", static_cast<long long>(batch), static_cast<long long>(batch));
+    }
+    return r.failed ? 1 : 0;
+}
+
 int cmdHistory(const cli::Parsed& p, const Globals& g) {
     Journal journal(journalPath(g));
     recoverJournal(journal, g.json);
@@ -942,6 +1009,12 @@ int main(int argc, char** argv) {
 
     parser.add("mcp", "Run as an MCP server on stdio (for Claude and other MCP clients)");
 
+    parser.add("moves", "Apply a JSON list of moves [{\"from\",\"to\"}] (dry run unless --apply)")
+        .positional("file")
+        .option("title", 0, "TEXT", "Name for the batch in history")
+        .flag("apply", 0, "Actually move (journaled, undoable)")
+        .flag("yes", 'y', "Do not ask for confirmation");
+
     parser.add("history", "List journaled operations")
         .option("limit", 0, "N", "How many batches (default 30)")
         .flag("verbose", 'v', "Show the operations of the latest batch");
@@ -983,6 +1056,7 @@ int main(int argc, char** argv) {
         if (p.command == "nas") return cmdNas(p, g);
         if (p.command == "serve") return cmdServe(p, g);
         if (p.command == "mcp") return cmdMcp(p, g);
+        if (p.command == "moves") return cmdMoves(p, g);
         if (p.command == "undo") return cmdUndoResume(p, g, true);
         if (p.command == "resume") return cmdUndoResume(p, g, false);
     } catch (const cli::UsageError& e) {

@@ -294,3 +294,30 @@ TEST_CASE("executor: recovery only touches batches of its own volume") {
     CHECK(journal.ops(remote)[0].state == OpState::Started);
     CHECK(journal.volumesWithRunningBatches() == std::vector<std::string>{"ssh://nas"});
 }
+
+TEST_CASE("executor: whole folders move atomically, never overwrite, and undo") {
+    TempTree t, j;
+    t.file("project/src/main.cpp", 100, 'm');
+    t.file("project/.git/HEAD", 20, 'h');
+    t.file("taken/x.txt", 5, 'x');
+    t.dir("Repos");
+    Journal journal(j.root() / "journal.db");
+    LocalFileSystem lfs;
+    JournalOp mv, clash;
+    mv.action = clash.action = Action::Move;
+    mv.src = u8(t.root() / "project");
+    mv.dst = u8(t.root() / "Repos" / "project");
+    clash.src = u8(t.root() / "Repos");
+    clash.dst = u8(t.root() / "taken");  // exists: must be refused
+    const int64_t batch = journal.createBatch("organize", "folders", "local", {mv, clash});
+    Executor ex(lfs, journal);
+    const auto r = ex.run(batch);
+    CHECK(r.done == 1);
+    CHECK(r.skipped == 1);
+    CHECK(read(t.root() / "Repos" / "project" / "src" / "main.cpp") == std::string(100, 'm'));
+    CHECK(fs::exists(t.root() / "Repos" / "project" / ".git" / "HEAD"));
+    CHECK(read(t.root() / "taken" / "x.txt") == std::string(5, 'x'));
+    CHECK(ex.undo(batch).done == 1);
+    CHECK(read(t.root() / "project" / "src" / "main.cpp") == std::string(100, 'm'));
+    CHECK(!fs::exists(t.root() / "Repos" / "project"));
+}

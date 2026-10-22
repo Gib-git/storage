@@ -135,7 +135,8 @@ Executor::Outcome Executor::perform(JournalOp& op, std::string& detail, std::str
         detail = "no longer exists";
         return Outcome::Skipped;
     }
-    const bool folderAction = op.action == Action::DeleteTree || (op.action == Action::Trash && op.ref.empty());
+    const bool folderAction =
+        op.action == Action::DeleteTree || op.action == Action::Move || (op.action == Action::Trash && op.ref.empty());
     if (src.kind != NodeKind::File && !(folderAction && (src.kind == NodeKind::Directory || src.kind == NodeKind::Symlink))) {
         detail = "is not a regular file";
         return Outcome::Skipped;
@@ -234,6 +235,11 @@ Executor::Outcome Executor::performMove(JournalOp& op, const std::string& from, 
     if (ec != std::errc::cross_device_link) {
         detail = message(ec);
         return ec == std::errc::file_exists ? Outcome::Skipped : Outcome::Failed;
+    }
+    DirEntry what;
+    if (!fs_.stat(from, what) && what.kind != NodeKind::File) {
+        detail = "folders can only be moved within the same drive";
+        return Outcome::Failed;
     }
 
     // Different volumes: copy to a temp name, verify, publish, and only then remove the source.
