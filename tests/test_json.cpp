@@ -1,3 +1,5 @@
+#include <string>
+
 #include "check.hpp"
 #include "storage/core/json.hpp"
 
@@ -5,13 +7,16 @@ using storage::json::Value;
 
 TEST_CASE("json dumps objects in insertion order") {
     Value v = Value::object({{"b", 1}, {"a", "x"}, {"list", Value::array({true, nullptr, 2.5})}});
-    CHECK(v.dump() == R"({"b":1,"a":"x","list":[true,null,2.5]})");
+    const std::string expected = R"({"b":1,"a":"x","list":[true,null,2.5]})";
+    CHECK(v.dump() == expected);
     CHECK(Value::object().dump() == "{}");
     CHECK(Value::array().dump(2) == "[]");
 }
 
 TEST_CASE("json escapes strings") {
-    CHECK(Value("a\"b\\c\n\x01").dump() == R"("a\"b\\c\n\u0001")");
+    // Raw strings stay outside CHECK(): MSVC mis-tokenizes them inside macro arguments.
+    const std::string escaped = R"("a\"b\\c\n\u0001")";
+    CHECK(Value("a\"b\\c\n\x01").dump() == escaped);
     CHECK(Value("héllo").dump() == "\"héllo\"");
 }
 
@@ -28,6 +33,13 @@ TEST_CASE("json parses what it dumps") {
     CHECK(v.get("u").asString() == "é😀");
     CHECK(v.get("missing").isNull());
     CHECK(Value::parse(v.dump(2)).dump() == v.dump());
+}
+
+TEST_CASE("json decodes unicode escapes and surrogate pairs") {
+    // é, then U+1F600 written as a UTF-16 surrogate pair
+    const std::string text = "{\"u\":\"\\u00e9\\ud83d\\ude00\"}";
+    const std::string expected = "\xC3\xA9\xF0\x9F\x98\x80";
+    CHECK(Value::parse(text).get("u").asString() == expected);
 }
 
 TEST_CASE("json rejects malformed input") {
