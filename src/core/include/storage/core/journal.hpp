@@ -84,8 +84,10 @@ public:
 
     JournalBatch batch(int64_t id);
     std::vector<JournalBatch> batches(int limit = 100);
-    // Batches left running by a crash or kill.
-    std::vector<int64_t> runningBatches();
+    // Batches left running by a crash or kill, on `volume` (all volumes when empty).
+    std::vector<int64_t> runningBatches(const std::string& volume = {});
+    // Volumes that have batches left running.
+    std::vector<std::string> volumesWithRunningBatches();
 
 private:
     void exec(const char* sql);

@@ -13,16 +13,13 @@
 
 #include "Theme.h"
 #include "storage/core/format.hpp"
+#include "storage/core/volumes.hpp"
 
 using namespace storage;
 
 namespace {
 QString qs(const std::string& s) { return QString::fromStdString(s); }
 
-LocalFileSystem& localFs() {
-    static LocalFileSystem fs;
-    return fs;
-}
 
 QString stateLabel(const std::string& s) {
     if (s == BatchState::Done) return QObject::tr("Done");
@@ -179,19 +176,32 @@ void HistoryView::run(bool undo) {
     if (QMessageBox::question(this, undo ? tr("Undo") : tr("Resume"),
                               (undo ? tr("Undo “%1”?") : tr("Finish “%1”?")).arg(what)) != QMessageBox::Yes)
         return;
+    FileSystem* fs = nullptr;
     try {
         journal_ = std::make_unique<Journal>(Journal::defaultPath());
+        fs = filesystemFor(journal_->batch(id).volume);
+        if (!fs) throw std::runtime_error("This batch belongs to a NAS that is no longer saved. Add it again to continue.");
     } catch (const std::exception& e) {
+        journal_.reset();
         QMessageBox::critical(this, tr("History"), qs(e.what()));
         return;
     }
-    executor_ = std::make_unique<Executor>(localFs(), *journal_);
+    executor_ = std::make_unique<Executor>(*fs, *journal_);
     undo_->setEnabled(false);
     resume_->setEnabled(false);
     poll_->start();
     Executor* ex = executor_.get();
+    Journal* journal = journal_.get();
     task_.start<ExecResult>(
-        this, [ex, id, undo] { return undo ? ex->undo(id) : ex->run(id); },
+        this,
+        [ex, id, undo, fs, journal] {
+            // A NAS batch is only checked for interrupted steps once we can reach the NAS.
+            try {
+                Executor::recover(*fs, *journal);
+            } catch (const std::exception&) {
+            }
+            return undo ? ex->undo(id) : ex->run(id);
+        },
         [this, undo](ExecResult r) {
             poll_->stop();
             executor_.reset();

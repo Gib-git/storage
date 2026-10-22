@@ -1,3 +1,4 @@
+#include <cstdio>
 #include <string>
 
 #include "check.hpp"
@@ -52,4 +53,17 @@ TEST_CASE("json rejects malformed input") {
         }
         CHECK(threw);
     }
+}
+
+TEST_CASE("json parses compact output from other tools") {
+    const std::string text =
+        "[{\"name\": \"loopback\", \"port\": 0, \"identityFile\": \"\", \"transport\": [\"sh\"], \"ok\": true}]";
+    bool parsed = false;
+    try {
+        const Value v = Value::parse(text);
+        parsed = v.size() == 1 && v[0].get("port").asInt(-1) == 0 && v[0].get("transport").size() == 1;
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "  parse error: %s\n", e.what());
+    }
+    CHECK(parsed);
 }

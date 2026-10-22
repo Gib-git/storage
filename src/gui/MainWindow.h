@@ -33,6 +33,8 @@ public:
 
     // Scan a path (or open its saved scan) — used for command-line arguments.
     void openPath(const QString& path, bool forceRescan);
+    // Open a saved NAS: its saved scan if there is one, otherwise scan its folder.
+    void openNas(const QString& name);
     // Switch to the Duplicates view for the current folder and start searching.
     void findDuplicatesNow();
     // Switch to the Organize view for the current folder and preview the selected rules.
@@ -58,7 +60,10 @@ private:
     QWidget* buildBrowserPage();
 
     void chooseFolder();
-    void startScan(const QString& path);
+    void startScan(const QString& path, const std::string& volume = "local");
+    void editNas(const QString& name);  // empty name = add a new one
+    void removeNas(const QString& name);
+    bool remote() const;
     void onScanStarted(const QString& what);
     void onScanProgress(const storage::ScanProgress& p);
     void onScanFinished(std::shared_ptr<storage::ScanTree> tree, const QString& error);

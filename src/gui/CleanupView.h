@@ -46,7 +46,7 @@ private:
     void findInFolder();
     void updateFolderSummary();
     void cleanFolder();
-    void run(std::vector<storage::JournalOp> ops, const QString& title, std::function<void()> after);
+    void run(std::vector<storage::JournalOp> ops, const QString& title, const std::string& volume, std::function<void()> after);
     void setWorking(bool on, const QString& text = {});
 
     QTabWidget* tabs_ = nullptr;

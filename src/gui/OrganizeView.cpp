@@ -33,16 +33,14 @@
 #include "Theme.h"
 #include "storage/core/format.hpp"
 #include "storage/core/paths.hpp"
+#include "storage/core/volumes.hpp"
 
 using namespace storage;
 
 namespace {
 QString qs(const std::string& s) { return QString::fromStdString(s); }
 
-LocalFileSystem& localFs() {
-    static LocalFileSystem fs;
-    return fs;
-}
+FileSystem* fsOf(const std::shared_ptr<ScanTree>& tree) { return filesystemFor(tree ? tree->volume : "local"); }
 
 QString rulesDir() {
     const QString dir = QDir(qs(toUtf8(appDataDir()))).filePath("rules");
@@ -249,7 +247,9 @@ void OrganizeView::setScope(std::shared_ptr<ScanTree> tree, Node* folder) {
         QString name = qs(folder_->name);
         if (!folder_->parent && !QFileInfo(name).fileName().isEmpty()) name = QFileInfo(name).fileName();
         scopeLabel_->setText(tr("Organize <b>%1</b>").arg(name.toHtmlEscaped()));
-        scopeLabel_->setToolTip(QDir::toNativeSeparators(qs(folder_->path(nativeSeparator()))));
+        const bool local = !tree_ || isLocalVolume(tree_->volume);
+        const QString p = qs(folder_->path(local ? nativeSeparator() : '/'));
+        scopeLabel_->setToolTip(local ? QDir::toNativeSeparators(p) : p);
     } else {
         scopeLabel_->setText(tr("Scan a folder first"));
     }
@@ -447,16 +447,23 @@ void OrganizeView::preview() {
     summary_->setText(tr("Working out where everything goes…"));
     progress_->setRange(0, 0);
     progress_->show();
+    FileSystem* fs = fsOf(tree_);
+    if (!fs) {
+        emit message(tr("This scan belongs to a NAS that is no longer saved."));
+        previewButton_->setEnabled(true);
+        progress_->hide();
+        return;
+    }
     auto keepAlive = tree_;
     Node* folder = folder_;
     const RuleSet rules = rules_;
     const std::string dest = destination_.toStdString();
     task_.start<std::shared_ptr<OrganizePlan>>(
         this,
-        [keepAlive, folder, rules, dest] {
+        [keepAlive, folder, rules, dest, fs] {
             std::shared_ptr<OrganizePlan> plan;
             try {
-                plan = std::make_shared<OrganizePlan>(Organizer(localFs(), rules).plan(*folder, dest));
+                plan = std::make_shared<OrganizePlan>(Organizer(*fs, rules).plan(*folder, dest));
             } catch (const std::exception&) {
             }
             return plan;
@@ -551,13 +558,15 @@ void OrganizeView::apply() {
     try {
         journal_ = std::make_unique<Journal>(Journal::defaultPath());
         const QString where = QFileInfo(qs(plan_->scope)).fileName();
+        FileSystem* fs = fsOf(tree_);
+        if (!fs) throw std::runtime_error("This scan belongs to a NAS that is no longer saved.");
         batch = journal_->createBatch("organize", tr("Organize %1 (%2)").arg(where, qs(rules_.name)).toStdString(),
-                                      "local", plan_->toOps());
+                                      fs->volumeName(), plan_->toOps());
     } catch (const std::exception& e) {
         QMessageBox::critical(this, tr("Organize"), qs(e.what()));
         return;
     }
-    executor_ = std::make_unique<Executor>(localFs(), *journal_);
+    executor_ = std::make_unique<Executor>(*fsOf(tree_), *journal_);
     previewButton_->setEnabled(false);
     applyButton_->setEnabled(false);
     progress_->show();

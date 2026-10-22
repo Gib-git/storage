@@ -228,11 +228,19 @@ std::vector<JournalBatch> Journal::batches(int limit) {
     return out;
 }
 
-std::vector<int64_t> Journal::runningBatches() {
+std::vector<int64_t> Journal::runningBatches(const std::string& volume) {
     std::vector<int64_t> out;
-    Stmt s(db_, "SELECT id FROM batches WHERE state=?1 ORDER BY id");
-    s.bind(1, std::string(BatchState::Running));
+    Stmt s(db_, "SELECT id FROM batches WHERE state=?1 AND (?2='' OR volume=?2) ORDER BY id");
+    s.bind(1, std::string(BatchState::Running)).bind(2, volume);
     while (s.step()) out.push_back(s.i64(0));
+    return out;
+}
+
+std::vector<std::string> Journal::volumesWithRunningBatches() {
+    std::vector<std::string> out;
+    Stmt s(db_, "SELECT DISTINCT volume FROM batches WHERE state=?1");
+    s.bind(1, std::string(BatchState::Running));
+    while (s.step()) out.push_back(s.text(0));
     return out;
 }
 

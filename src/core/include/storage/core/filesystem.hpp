@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -35,6 +36,14 @@ public:
     virtual std::string join(const std::string& dir, const std::string& name) const = 0;
     virtual char separator() const = 0;
     virtual std::string volumeName() const = 0;
+
+    // Optional fast path that walks a whole tree in one go (used for remote filesystems,
+    // where a round trip per directory would be far too slow). nullptr = not supported.
+    virtual std::unique_ptr<ScanTree> walkTree(const std::string& /*root*/, const std::atomic<bool>& /*cancel*/,
+                                               std::atomic<uint64_t>& /*files*/, std::atomic<uint64_t>& /*dirs*/,
+                                               std::atomic<uint64_t>& /*bytes*/) {
+        return nullptr;
+    }
 
     // Content hashes for duplicate detection, as lowercase hex SHA-256.
     // Partial: files up to 2 * kPartialChunk bytes are hashed whole; larger files

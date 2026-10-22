@@ -30,6 +30,7 @@
 #include "storage/core/index.hpp"
 #include "storage/core/journal.hpp"
 #include "storage/core/paths.hpp"
+#include "storage/core/volumes.hpp"
 
 using namespace storage;
 
@@ -37,9 +38,16 @@ namespace {
 enum Page { EmptyPage = 0, ProgressPage = 1, ResultsPage = 2 };
 QString qs(const std::string& s) { return QString::fromStdString(s); }
 
-LocalFileSystem& localFs() {
-    static LocalFileSystem fs;
-    return fs;
+FileSystem& fsOf(const std::shared_ptr<ScanTree>& tree) {
+    FileSystem* fs = filesystemFor(tree ? tree->volume : "local");
+    if (!fs) throw std::runtime_error("This scan belongs to a NAS that is no longer saved.");
+    return *fs;
+}
+
+QString shownPath(const std::shared_ptr<ScanTree>& tree, const Node* n) {
+    const bool local = !tree || isLocalVolume(tree->volume);
+    const QString p = qs(n->path(local ? nativeSeparator() : '/'));
+    return local ? QDir::toNativeSeparators(p) : p;
 }
 
 void reveal(const QString& path) {
@@ -261,7 +269,7 @@ void DuplicatesView::setScope(std::shared_ptr<ScanTree> tree, Node* folder) {
                                  .arg(name.toHtmlEscaped(),
                                       qs(humanSize(folder_->size) + " · " + withThousands(folder_->files) + " files"),
                                       theme::mutedText().name()));
-        scopeLabel_->setToolTip(QDir::toNativeSeparators(qs(folder_->path(nativeSeparator()))));
+        scopeLabel_->setToolTip(shownPath(tree_, folder_));
     } else {
         scopeLabel_->setText(tr("Scan a folder first"));
     }
@@ -301,7 +309,12 @@ void DuplicatesView::find() {
     } catch (const std::exception&) {
         cache_.reset();  // hashing still works without the cache
     }
-    finder_ = std::make_unique<DuplicateFinder>(localFs(), opt, cache_.get());
+    try {
+        finder_ = std::make_unique<DuplicateFinder>(fsOf(tree_), opt, cache_.get());
+    } catch (const std::exception& e) {
+        emit message(qs(e.what()));
+        return;
+    }
     setBusy(true, tr("Looking for duplicates…"));
 
     auto keepAlive = tree_;  // the scan tree must outlive the worker
@@ -323,7 +336,7 @@ void DuplicatesView::onFound(std::vector<DupGroup> groups) {
         emit message(tr("Search stopped."));
         return;
     }
-    model_->setGroups(std::move(groups), folder_ ? qs(folder_->path(nativeSeparator())) : QString());
+    model_->setGroups(std::move(groups), folder_ ? qs(folder_->path(fsOf(tree_).separator())) : QString());
     model_->applyRule(static_cast<KeepRule>(keepRule_->currentData().toInt()));
     if (model_->rowCount() == 0) {
         emptyLabel_->setText(tr("No duplicates found in %1.").arg(folder_ ? qs(folder_->name) : QString()));
@@ -396,13 +409,13 @@ void DuplicatesView::apply(const char* action) {
         journal_ = std::make_unique<Journal>(Journal::defaultPath());
         const QString where = folder_ ? qs(folder_->name) : QString();
         batch = journal_->createBatch("dedupe", tr("Duplicates in %1 (%2)").arg(where, QString::fromUtf8(action)).toStdString(),
-                                     "local", ops);
+                                      fsOf(tree_).volumeName(), ops);
     } catch (const std::exception& e) {
         QMessageBox::critical(this, title, qs(e.what()));
         return;
     }
 
-    executor_ = std::make_unique<Executor>(localFs(), *journal_);
+    executor_ = std::make_unique<Executor>(fsOf(tree_), *journal_);
     setBusy(true, title + "…");
     updateSummary();
     Executor* ex = executor_.get();

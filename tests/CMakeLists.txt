@@ -9,6 +9,7 @@ add_executable(storage_tests
     test_organize.cpp
     test_scanner.cpp
     test_sha256.cpp
+    test_ssh_fs.cpp
 )
 target_link_libraries(storage_tests PRIVATE storage::core)
 add_test(NAME storage_tests COMMAND storage_tests)

@@ -27,11 +27,16 @@ struct OptionSpec {
 struct Command {
     std::string name;
     std::string summary;
-    std::vector<std::string> positionals;  // names, all required
+    std::vector<std::string> positionals;  // required, in order
+    std::vector<std::string> optionals;    // optional, after the required ones
     std::vector<OptionSpec> options;
 
     Command& positional(std::string n) {
         positionals.push_back(std::move(n));
+        return *this;
+    }
+    Command& optionalPositional(std::string n) {
+        optionals.push_back(std::move(n));
         return *this;
     }
     Command& option(std::string n, char s, std::string valueName, std::string help) {
@@ -75,7 +80,7 @@ public:
 
     Command& global() { return global_; }
     Command& add(std::string name, std::string summary) {
-        commands_.push_back({std::move(name), std::move(summary), {}, {}});
+        commands_.push_back({std::move(name), std::move(summary), {}, {}, {}});
         return commands_.back();
     }
 
@@ -124,8 +129,8 @@ public:
         if (!cmd) throw UsageError("missing command");
         if (p.positional.size() < cmd->positionals.size())
             throw UsageError("missing <" + cmd->positionals[p.positional.size()] + ">");
-        if (p.positional.size() > cmd->positionals.size())
-            throw UsageError("unexpected argument '" + p.positional[cmd->positionals.size()] + "'");
+        const size_t most = cmd->positionals.size() + cmd->optionals.size();
+        if (p.positional.size() > most) throw UsageError("unexpected argument '" + p.positional[most] + "'");
         return p;
     }
 
@@ -144,6 +149,7 @@ public:
         }
         std::printf("%s\n\nUsage: %s %s [options]", cmd->summary.c_str(), program_.c_str(), cmd->name.c_str());
         for (const auto& pos : cmd->positionals) std::printf(" <%s>", pos.c_str());
+        for (const auto& pos : cmd->optionals) std::printf(" [%s]", pos.c_str());
         std::printf("\n\nOptions:\n");
         printOptions(*cmd);
         printOptions(global_);

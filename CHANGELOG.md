@@ -2,6 +2,30 @@
 
 All notable changes are listed here. Each phase of the roadmap ships as a release.
 
+## [0.5.0] — Phase 5: NAS over SSH
+
+### Added
+- **NAS support** using the `ssh` that ships with macOS, Linux and Windows. Nothing is installed
+  on the NAS and no SSH library is bundled; your keys, ssh-agent and `~/.ssh/config` aliases just work
+  - Persistent sessions (up to four in parallel) with a marker-delimited protocol, so there's no
+    login per command
+  - Whole-tree scans in a single streamed `find`; GNU `find -printf` when available, with
+    BusyBox/GNU `stat` and BSD `stat` fallbacks (Synology, QNAP, Unraid, TrueNAS SCALE/CORE)
+  - Hashing on the NAS (`sha256sum` / `sha256` / `shasum`): content never crosses the network,
+    and the hashes match ones computed locally
+  - Never-overwrite moves (`ln` + `rm`), verified copies between volumes, hard links, reflink
+    clones where `cp --reflink` exists, and a same-volume `.storage-trash` quarantine with undo
+- **App**: *Network* section in the sidebar, **Add NAS…** dialog with **Test Connection**;
+  duplicates, organize, insights and history all work on NAS scans; `Storage --nas NAME`
+- **CLI**: `storagectl nas add|list|remove|test`, and a global `--nas NAME` for `scan`, `du`, `dupes`,
+  `organize` and `insights`; `undo`/`resume` reconnect to the batch's NAS automatically
+- docs/NAS.md
+
+### Fixed
+- Crash recovery now handles each volume with its own filesystem. Previously a local recovery
+  pass could misjudge operations recorded for a NAS.
+- A dangling reference when loading saved NAS connections (range-for over a temporary)
+
 ## [0.4.0] — Phase 4: Cleanup
 
 ### Added

@@ -11,6 +11,7 @@ qt_add_executable(Storage WIN32 MACOSX_BUNDLE
     DuplicatesView.cpp DuplicatesView.h
     HistoryView.cpp HistoryView.h
     MainWindow.cpp MainWindow.h
+    NasDialog.cpp NasDialog.h
     OrganizeView.cpp OrganizeView.h
     RuleDialog.cpp RuleDialog.h
     ScanController.cpp ScanController.h

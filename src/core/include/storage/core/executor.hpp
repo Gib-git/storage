@@ -47,7 +47,8 @@ public:
     void cancel() { cancel_ = true; }
     ExecProgress progress() const;
 
-    // Resolve operations a crash left "started" and mark their batches interrupted.
+    // Resolve operations a crash left "started" on this filesystem's volume and mark their
+    // batches interrupted.
     // Returns the ids of the batches that were recovered (resume them with run()).
     static std::vector<int64_t> recover(FileSystem& fs, Journal& journal);
 

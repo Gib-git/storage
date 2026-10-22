@@ -13,6 +13,7 @@
 #include "storage/core/format.hpp"
 #include "storage/core/index.hpp"
 #include "storage/core/paths.hpp"
+#include "storage/core/ssh_fs.hpp"
 
 namespace {
 
@@ -96,6 +97,19 @@ void Sidebar::reload() {
         it->setToolTip(0, QDir::toNativeSeparators(v.rootPath()) + " · " + QString::fromUtf8(v.fileSystemType()));
     }
 
+    auto* network = section(tr("Network"));
+    for (const auto& nas : storage::loadNasConfigs()) {
+        auto* it = new QTreeWidgetItem(network, {QString::fromStdString(nas.name)});
+        it->setIcon(0, icons.icon(QFileIconProvider::Network));
+        it->setData(0, NasRole, QString::fromStdString(nas.name));
+        it->setData(0, SubtitleRole, QString::fromStdString(nas.volume().substr(6) + " · " + nas.root));
+        it->setToolTip(0, QString::fromStdString(nas.volume() + nas.root));
+    }
+    auto* add = new QTreeWidgetItem(network, {tr("Add NAS…")});
+    add->setIcon(0, icons.icon(QFileIconProvider::Network));
+    add->setData(0, ActionRole, QStringLiteral("add-nas"));
+    add->setForeground(0, theme::mutedText());
+
     try {
         storage::Index index(storage::defaultIndexPath());
         const auto scans = index.scans();
@@ -109,8 +123,10 @@ void Sidebar::reload() {
                 it->setIcon(0, icons.icon(QFileIconProvider::Folder));
                 it->setData(0, ScanIdRole, static_cast<qlonglong>(s.id));
                 it->setData(0, PathRole, root);
-                it->setData(0, SubtitleRole, QString::fromStdString(storage::humanSize(s.bytes) + " · " +
+                const std::string where = s.volume == "local" ? std::string() : s.volume.substr(6) + " · ";
+                it->setData(0, SubtitleRole, QString::fromStdString(where + storage::humanSize(s.bytes) + " · " +
                                                                     storage::formatTime(s.finished)));
+                if (s.volume != "local") it->setIcon(0, icons.icon(QFileIconProvider::Network));
                 it->setToolTip(0, root);
             }
         }
@@ -121,6 +137,14 @@ void Sidebar::reload() {
 
 void Sidebar::activate(QTreeWidgetItem* item) {
     if (!item || !item->parent()) return;
+    if (item->data(0, ActionRole).toString() == "add-nas") {
+        emit addNasRequested();
+        return;
+    }
+    if (const QString nas = item->data(0, NasRole).toString(); !nas.isEmpty()) {
+        emit nasRequested(nas);
+        return;
+    }
     const qint64 id = item->data(0, ScanIdRole).toLongLong();
     if (id > 0) {
         emit loadRequested(id);
@@ -146,7 +170,16 @@ void Sidebar::contextMenuEvent(QContextMenuEvent* e) {
     const QString path = item->data(0, PathRole).toString();
     const qint64 id = item->data(0, ScanIdRole).toLongLong();
     QMenu menu(this);
-    if (!path.isEmpty()) menu.addAction(tr("Scan Again"), this, [this, path] { emit scanRequested(path); });
+    if (const QString nas = item->data(0, NasRole).toString(); !nas.isEmpty()) {
+        menu.addAction(tr("Scan"), this, [this, nas] { emit nasRequested(nas); });
+        menu.addAction(tr("Edit…"), this, [this, nas] { emit editNasRequested(nas); });
+        menu.addSeparator();
+        menu.addAction(tr("Remove"), this, [this, nas] { emit removeNasRequested(nas); });
+        menu.exec(e->globalPos());
+        return;
+    }
+    if (!path.isEmpty() && item->data(0, ScanIdRole).toLongLong() == 0)
+        menu.addAction(tr("Scan Again"), this, [this, path] { emit scanRequested(path); });
     if (id > 0) menu.addAction(tr("Remove from Index"), this, [this, id] { emit removeRequested(id); });
     if (!menu.isEmpty()) menu.exec(e->globalPos());
 }

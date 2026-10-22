@@ -20,7 +20,8 @@ public:
     ~ScanController() override;
 
     bool busy() const { return busy_; }
-    void scan(const QString& path);
+    // `volume` is "local" or a saved NAS's "ssh://..." volume.
+    void scan(const QString& path, const std::string& volume = "local");
     void load(qint64 scanId);
     void cancel();
 

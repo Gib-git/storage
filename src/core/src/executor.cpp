@@ -367,7 +367,9 @@ Executor::Outcome Executor::reverse(JournalOp& op, std::string& detail) {
 
 std::vector<int64_t> Executor::recover(FileSystem& fs, Journal& journal) {
     std::vector<int64_t> recovered;
-    for (int64_t batch : journal.runningBatches()) {
+    // Only this filesystem's batches: checking a NAS path against the local disk (or the
+    // reverse) would misjudge what finished.
+    for (int64_t batch : journal.runningBatches(fs.volumeName())) {
         for (auto& op : journal.ops(batch)) {
             if (op.state != OpState::Started) continue;
             // Temp files are only ever created by us; they are never the sole copy of anything.

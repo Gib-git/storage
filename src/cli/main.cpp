@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <sstream>
 #include <thread>
 
@@ -28,6 +29,7 @@
 #include "storage/core/organize.hpp"
 #include "storage/core/paths.hpp"
 #include "storage/core/scanner.hpp"
+#include "storage/core/ssh_fs.hpp"
 #include "storage/core/version.hpp"
 
 #include "args.hpp"
@@ -45,8 +47,50 @@ void onSignal(int) {
 
 struct Globals {
     std::string db;
+    std::string nas;  // saved NAS name; empty = this computer
     bool json = false;
 };
+
+NasConfig findNas(const std::string& nameOrVolume) {
+    for (const auto& c : loadNasConfigs())
+        if (c.name == nameOrVolume || c.volume() == nameOrVolume) return c;
+    throw cli::UsageError("no saved NAS named '" + nameOrVolume + "' (add one with `storagectl nas add`)");
+}
+
+// One connection per NAS for the life of the process.
+FileSystem& connectNas(const NasConfig& cfg, bool quiet) {
+    static std::map<std::string, std::unique_ptr<SshFileSystem>> open;
+    auto& slot = open[cfg.volume()];
+    if (!slot) {
+        if (!quiet && STORAGE_ISATTY(stderr)) std::fprintf(stderr, "Connecting to %s…\n", cfg.name.c_str());
+        auto fs = std::make_unique<SshFileSystem>(cfg);
+        std::string message;
+        if (auto ec = fs->connect(message))
+            throw std::runtime_error("cannot connect to " + cfg.name + ": " + (message.empty() ? ec.message() : message));
+        slot = std::move(fs);
+    }
+    return *slot;
+}
+
+FileSystem& filesystem(const Globals& g) {
+    static LocalFileSystem local;
+    return g.nas.empty() ? static_cast<FileSystem&>(local) : connectNas(findNas(g.nas), g.json);
+}
+
+FileSystem& filesystemForVolume(const std::string& volume, bool quiet) {
+    static LocalFileSystem local;
+    return volume == "local" || volume.empty() ? static_cast<FileSystem&>(local) : connectNas(findNas(volume), quiet);
+}
+
+// Local paths are made absolute; NAS paths are taken relative to the NAS's default folder.
+std::string resolvePath(const Globals& g, const std::string& path) {
+    if (g.nas.empty()) return normalizeLocalPath(path);
+    if (!path.empty() && path[0] == '/') return path.size() > 1 && path.back() == '/' ? path.substr(0, path.size() - 1) : path;
+    const NasConfig cfg = findNas(g.nas);
+    std::string base = cfg.root.empty() ? "/" : cfg.root;
+    if (path.empty() || path == ".") return base;
+    return base.back() == '/' ? base + path : base + "/" + path;
+}
 
 std::filesystem::path dbPath(const Globals& g) {
     return g.db.empty() ? defaultIndexPath() : fromUtf8(g.db);
@@ -57,8 +101,7 @@ std::filesystem::path journalPath(const Globals& g) {
     return g.db.empty() ? Journal::defaultPath() : fromUtf8(g.db).parent_path() / "journal.db";
 }
 
-std::unique_ptr<ScanTree> runScan(const std::string& root, unsigned threads, bool crossMounts, bool quiet) {
-    LocalFileSystem fs;
+std::unique_ptr<ScanTree> runScan(FileSystem& fs, const std::string& root, unsigned threads, bool crossMounts, bool quiet) {
     ScanOptions opts = ScanOptions::defaultsFor(root);
     opts.threads = threads;
     if (crossMounts) opts.stayOnDevice = false;
@@ -150,8 +193,8 @@ Json scanInfoJson(const ScanInfo& s) {
 }
 
 int cmdScan(const cli::Parsed& p, const Globals& g) {
-    const std::string root = normalizeLocalPath(p.positional[0]);
-    auto tree = runScan(root, static_cast<unsigned>(p.number("threads", 0)), p.has("cross-mounts"), g.json);
+    const std::string root = resolvePath(g, p.positional[0]);
+    auto tree = runScan(filesystem(g), root, static_cast<unsigned>(p.number("threads", 0)), p.has("cross-mounts"), g.json);
     if (!p.has("no-save")) Index(dbPath(g)).save(*tree);
     const Node& r = *tree->root;
     if (g.json) {
@@ -174,7 +217,7 @@ int cmdScan(const cli::Parsed& p, const Globals& g) {
 }
 
 int cmdDu(const cli::Parsed& p, const Globals& g) {
-    const std::string target = normalizeLocalPath(p.positional[0]);
+    const std::string target = resolvePath(g, p.positional[0]);
     const int depth = static_cast<int>(p.number("depth", 1));
     const size_t top = static_cast<size_t>(std::max(1LL, p.number("top", 20)));
 
@@ -183,14 +226,14 @@ int cmdDu(const cli::Parsed& p, const Globals& g) {
     if (p.has("indexed")) {
         Index index(dbPath(g));
         for (const auto& s : index.scans()) {
-            if (s.volume != "local" || target.rfind(s.root, 0) != 0) continue;  // scan must contain target
+            if (s.volume != filesystem(g).volumeName() || target.rfind(s.root, 0) != 0) continue;  // must contain target
             tree = index.load(s.id);
             if (tree && (node = tree->find(target))) break;
             tree.reset();
         }
         if (!node) throw std::runtime_error("no indexed scan contains " + target + " (run `storagectl scan` first)");
     } else {
-        tree = runScan(target, static_cast<unsigned>(p.number("threads", 0)), p.has("cross-mounts"), g.json);
+        tree = runScan(filesystem(g), target, static_cast<unsigned>(p.number("threads", 0)), p.has("cross-mounts"), g.json);
         node = tree->root.get();
     }
     if (g.json) std::cout << nodeJson(*node, depth, top).dump(2) << "\n";
@@ -259,11 +302,20 @@ bool confirm(const std::string& question) {
 
 // Finish anything a crash left half-done before starting new work.
 void recoverJournal(Journal& journal, bool quiet) {
-    LocalFileSystem fs;
-    for (int64_t id : Executor::recover(fs, journal))
-        if (!quiet)
-            std::fprintf(stderr, "note: batch %lld was interrupted; resume it with `storagectl resume %lld`\n",
-                         static_cast<long long>(id), static_cast<long long>(id));
+    for (const auto& volume : journal.volumesWithRunningBatches()) {
+        std::vector<int64_t> ids;
+        try {
+            ids = Executor::recover(filesystemForVolume(volume, true), journal);
+        } catch (const std::exception& e) {
+            // An unreachable NAS keeps its batches as they are until it can be checked.
+            if (!quiet) std::fprintf(stderr, "note: interrupted work on %s not checked yet: %s\n", volume.c_str(), e.what());
+            continue;
+        }
+        for (int64_t id : ids)
+            if (!quiet)
+                std::fprintf(stderr, "note: batch %lld was interrupted; resume it with `storagectl resume %lld`\n",
+                             static_cast<long long>(id), static_cast<long long>(id));
+    }
 }
 
 Json batchJson(const JournalBatch& b) {
@@ -310,7 +362,7 @@ ExecResult runWithProgress(Executor& ex, bool quiet, Fn fn) {
 }
 
 int cmdDupes(const cli::Parsed& p, const Globals& g) {
-    const std::string target = normalizeLocalPath(p.positional[0]);
+    const std::string target = resolvePath(g, p.positional[0]);
     DupOptions opt;
     opt.minSize = std::max<uint64_t>(1, parseSize(p.value("min-size", "1")));
     opt.verifyBytes = p.has("paranoid");
@@ -319,13 +371,13 @@ int cmdDupes(const cli::Parsed& p, const Globals& g) {
     opt.threads = static_cast<unsigned>(p.number("threads", 0));
     const KeepRule rule = parseKeepRule(p.value("keep", "oldest"));
     std::vector<std::string> prefer;
-    for (const auto& f : splitList(p.value("prefer"))) prefer.push_back(normalizeLocalPath(f));
+    for (const auto& f : splitList(p.value("prefer"))) prefer.push_back(resolvePath(g, f));
     const std::string action = p.value("action", Action::Trash);
     if (action != Action::Trash && action != Action::Delete && action != Action::Hardlink && action != Action::Clone)
         throw cli::UsageError("--action must be trash, delete, hardlink or clone");
 
-    std::unique_ptr<ScanTree> tree = runScan(target, 0, false, g.json);
-    LocalFileSystem fs;
+    std::unique_ptr<ScanTree> tree = runScan(filesystem(g), target, 0, false, g.json);
+    FileSystem& fs = filesystem(g);
     Index index(dbPath(g));
     DuplicateFinder finder(fs, opt, &index);
 
@@ -414,7 +466,7 @@ int cmdDupes(const cli::Parsed& p, const Globals& g) {
     Journal journal(journalPath(g));
     recoverJournal(journal, g.json);
     auto ops = planDedupe(groups, remove, action);
-    const int64_t batch = journal.createBatch("dedupe", "Duplicates in " + target + " (" + action + ")", "local", ops);
+    const int64_t batch = journal.createBatch("dedupe", "Duplicates in " + target + " (" + action + ")", fs.volumeName(), ops);
     ExecOptions eo;
     eo.verifyContent = !p.has("no-verify");
     Executor ex(fs, journal, eo);
@@ -475,12 +527,12 @@ int cmdPresets(const cli::Parsed& p, const Globals& g) {
 }
 
 int cmdOrganize(const cli::Parsed& p, const Globals& g) {
-    const std::string target = normalizeLocalPath(p.positional[0]);
+    const std::string target = resolvePath(g, p.positional[0]);
     const RuleSet rules = loadRules(p);
-    const std::string dest = p.values.count("dest") ? normalizeLocalPath(p.value("dest")) : std::string();
+    const std::string dest = p.values.count("dest") ? resolvePath(g, p.value("dest")) : std::string();
 
-    std::unique_ptr<ScanTree> tree = runScan(target, 0, false, g.json);
-    LocalFileSystem fs;
+    std::unique_ptr<ScanTree> tree = runScan(filesystem(g), target, 0, false, g.json);
+    FileSystem& fs = filesystem(g);
     const OrganizePlan plan = Organizer(fs, rules).plan(*tree->root, dest);
     const bool apply = p.has("apply");
     auto relOf = [](const std::string& path, const std::string& base) {
@@ -534,7 +586,7 @@ int cmdOrganize(const cli::Parsed& p, const Globals& g) {
     }
     Journal journal(journalPath(g));
     recoverJournal(journal, g.json);
-    const int64_t batch = journal.createBatch("organize", "Organize " + target + " (" + rules.name + ")", "local", plan.toOps());
+    const int64_t batch = journal.createBatch("organize", "Organize " + target + " (" + rules.name + ")", fs.volumeName(), plan.toOps());
     Executor ex(fs, journal);
     const ExecResult r = runWithProgress(ex, g.json, [&] { return ex.run(batch); });
     if (g.json) {
@@ -551,6 +603,7 @@ int cmdOrganize(const cli::Parsed& p, const Globals& g) {
 
 
 int cmdClean(const cli::Parsed& p, const Globals& g) {
+    if (!g.nas.empty()) throw cli::UsageError("`clean` works on this computer; for a NAS use `insights` and `dupes`");
     std::vector<CleanTarget> targets;
     const auto only = splitList(p.value("only"));
     for (const auto& t : cleanCatalogue()) {
@@ -613,11 +666,11 @@ int cmdClean(const cli::Parsed& p, const Globals& g) {
 }
 
 int cmdInsights(const cli::Parsed& p, const Globals& g) {
-    const std::string target = normalizeLocalPath(p.positional[0]);
+    const std::string target = resolvePath(g, p.positional[0]);
     const int days = static_cast<int>(p.number("older", 365));
     const uint64_t minSize = parseSize(p.value("min-size", "100M"));
-    auto tree = runScan(target, 0, false, g.json);
-    const char sep = nativeSeparator();
+    auto tree = runScan(filesystem(g), target, 0, false, g.json);
+    const char sep = filesystem(g).separator();
     const auto large = findLargeOldFiles(*tree->root, sep, minSize, days, 50);
     const auto junk = findProjectJunk(*tree->root, sep, std::min(days, 180));
     const auto empty = findEmptyFolders(*tree->root, sep);
@@ -646,6 +699,75 @@ int cmdInsights(const cli::Parsed& p, const Globals& g) {
     section("Rebuildable project folders in idle projects", junk, true);
     section("Empty folders", empty, false);
     return 0;
+}
+
+
+int cmdNas(const cli::Parsed& p, const Globals& g) {
+    const std::string action = p.positional[0];
+    const std::string name = p.positional.size() > 1 ? p.positional[1] : std::string();
+    auto list = loadNasConfigs();
+    if (action == "list") {
+        if (g.json) {
+            Json arr = Json::array();
+            for (const auto& c : list) arr.push_back(c.toJson());
+            std::cout << arr.dump(2) << "\n";
+        } else if (list.empty()) {
+            std::printf("No NAS saved. Add one: storagectl nas add mynas --host 192.168.1.20 --user admin --root /volume1\n");
+        } else {
+            for (const auto& c : list) std::printf("%-16s %-32s root %s\n", c.name.c_str(), c.volume().c_str(), c.root.c_str());
+        }
+        return 0;
+    }
+    if (name.empty()) throw cli::UsageError("`nas " + action + "` needs a name");
+    if (action == "add") {
+        NasConfig c;
+        c.name = name;
+        c.host = p.value("host", name);
+        c.user = p.value("user");
+        c.port = static_cast<int>(p.number("port", 0));
+        c.identityFile = p.value("key");
+        c.root = p.value("root", "/");
+        list.erase(std::remove_if(list.begin(), list.end(), [&](const NasConfig& x) { return x.name == name; }), list.end());
+        list.push_back(c);
+        saveNasConfigs(list);
+        std::printf("Saved %s (%s). Test it with: storagectl nas test %s\n", name.c_str(), c.volume().c_str(), name.c_str());
+        return 0;
+    }
+    if (action == "remove") {
+        const size_t before = list.size();
+        list.erase(std::remove_if(list.begin(), list.end(), [&](const NasConfig& x) { return x.name == name; }), list.end());
+        if (list.size() == before) throw cli::UsageError("no saved NAS named '" + name + "'");
+        saveNasConfigs(list);
+        std::printf("Removed %s\n", name.c_str());
+        return 0;
+    }
+    if (action == "test") {
+        const NasConfig cfg = findNas(name);
+        SshFileSystem fs(cfg, 1);
+        std::string message;
+        if (auto ec = fs.connect(message)) {
+            std::fprintf(stderr, "Could not connect to %s: %s\n", cfg.name.c_str(), message.empty() ? ec.message().c_str() : message.c_str());
+            std::fprintf(stderr, "\nStorage uses your ssh keys (no passwords). Set one up with:\n  ssh-keygen -t ed25519   (if you have no key)\n  ssh-copy-id %s%s\n",
+                         cfg.user.empty() ? "" : (cfg.user + "@").c_str(), cfg.host.c_str());
+            return 1;
+        }
+        const auto& c = fs.caps();
+        DirEntry root;
+        const bool rootOk = !fs.stat(cfg.root, root) && root.kind == NodeKind::Directory;
+        if (g.json) {
+            std::cout << Json::object({{"connected", true}, {"system", c.system}, {"gnu_find", c.gnuFind}, {"stat", c.stat},
+                                       {"sha", c.sha}, {"reflink", c.reflink}, {"root_ok", rootOk}})
+                             .dump(2)
+                      << "\n";
+        } else {
+            std::printf("Connected to %s (%s)\n  listing: %s\n  hashing: %s\n  clones:  %s\n  root %s: %s\n", cfg.name.c_str(),
+                        c.system.c_str(), c.gnuFind ? "GNU find (fast)" : ("stat (" + c.stat + ")").c_str(),
+                        c.sha.empty() ? "unavailable — duplicate search will not work" : c.sha.c_str(),
+                        c.reflink ? "supported" : "not supported", cfg.root.c_str(), rootOk ? "ok" : "NOT FOUND");
+        }
+        return rootOk ? 0 : 1;
+    }
+    throw cli::UsageError("unknown nas action '" + action + "' (add, list, remove, test)");
 }
 
 int cmdHistory(const cli::Parsed& p, const Globals& g) {
@@ -690,7 +812,7 @@ int cmdUndoResume(const cli::Parsed& p, const Globals& g, bool undo) {
         return 0;
     }
     if (!p.has("yes") && !confirm(std::string(undo ? "Undo" : "Resume") + " \"" + b.title + "\"?")) return 1;
-    LocalFileSystem fs;
+    FileSystem& fs = filesystemForVolume(b.volume, g.json);
     Executor ex(fs, journal);
     const ExecResult r = runWithProgress(ex, g.json, [&] { return undo ? ex.undo(id) : ex.run(id); });
     if (g.json) std::cout << batchJson(journal.batch(id)).dump(2) << "\n";
@@ -704,6 +826,7 @@ int main(int argc, char** argv) {
     cli::Parser parser("storagectl", "storagectl — index, deduplicate, organize and clean disks");
     parser.global()
         .option("db", 0, "PATH", "Index database (default: per-user app data directory)")
+        .option("nas", 0, "NAME", "Work on a saved NAS over SSH instead of this computer")
         .flag("json", 0, "Machine-readable JSON output")
         .flag("help", 'h', "Show help")
         .flag("version", 0, "Show version");
@@ -762,6 +885,15 @@ int main(int argc, char** argv) {
         .option("older", 0, "DAYS", "Not modified for this many days (default 365)")
         .option("min-size", 0, "SIZE", "Minimum size for large files (default 100M)");
 
+    parser.add("nas", "Manage NAS connections: add, list, remove, test")
+        .positional("action")
+        .optionalPositional("name")
+        .option("host", 0, "HOST", "Host name, IP or ~/.ssh/config alias (default: the name)")
+        .option("user", 'u', "USER", "SSH user")
+        .option("port", 0, "PORT", "SSH port")
+        .option("key", 0, "FILE", "Private key file (default: your ssh agent/keys)")
+        .option("root", 0, "DIR", "Default folder on the NAS, e.g. /volume1 (default /)");
+
     parser.add("history", "List journaled operations")
         .option("limit", 0, "N", "How many batches (default 30)")
         .flag("verbose", 'v', "Show the operations of the latest batch");
@@ -787,6 +919,7 @@ int main(int argc, char** argv) {
         return 0;
     }
     g.db = p.value("db");
+    g.nas = p.value("nas");
     g.json = p.has("json");
 
     try {
@@ -799,6 +932,7 @@ int main(int argc, char** argv) {
         if (p.command == "presets") return cmdPresets(p, g);
         if (p.command == "clean") return cmdClean(p, g);
         if (p.command == "insights") return cmdInsights(p, g);
+        if (p.command == "nas") return cmdNas(p, g);
         if (p.command == "undo") return cmdUndoResume(p, g, true);
         if (p.command == "resume") return cmdUndoResume(p, g, false);
     } catch (const cli::UsageError& e) {

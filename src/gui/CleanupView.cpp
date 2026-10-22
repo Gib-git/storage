@@ -27,6 +27,7 @@
 #include "Theme.h"
 #include "storage/core/format.hpp"
 #include "storage/core/paths.hpp"
+#include "storage/core/volumes.hpp"
 
 using namespace storage;
 
@@ -309,7 +310,7 @@ void CleanupView::cleanSystem() {
     if (permanent_->isChecked()) text += tr("\n\nCaches marked Safe are deleted permanently; everything else goes to the Trash.");
     if (caution) text += tr("\n\nYou selected items marked Caution — make sure you don't need them.");
     if (QMessageBox::question(this, tr("Clean Up"), text) != QMessageBox::Yes) return;
-    run(planClean(chosen, permanent_->isChecked()), tr("Clean up %1").arg(qs(humanSize(bytes))), [this] { analyze(); });
+    run(planClean(chosen, permanent_->isChecked()), tr("Clean up %1").arg(qs(humanSize(bytes))), "local", [this] { analyze(); });
 }
 
 // --- In this folder ----------------------------------------------------------------
@@ -333,7 +334,8 @@ void CleanupView::findInFolder() {
     if (!folder_) return;
     const QSignalBlocker block(findings_);
     findings_->clear();
-    const char sep = nativeSeparator();
+    FileSystem* fs = filesystemFor(tree_ ? tree_->volume : "local");
+    const char sep = fs ? fs->separator() : nativeSeparator();
     const int days = age_->currentData().toInt();
     const uint64_t minSize = static_cast<uint64_t>(minSize_->currentData().toInt()) * 1024 * 1024;
 
@@ -406,7 +408,7 @@ void CleanupView::cleanFolder() {
                                  static_cast<int>(ops.size()))
                                   .arg(qs(humanSize(bytes)))) != QMessageBox::Yes)
         return;
-    run(std::move(ops), tr("Clean up in %1").arg(folder_ ? qs(folder_->name) : QString()), [this] {
+    run(std::move(ops), tr("Clean up in %1").arg(folder_ ? qs(folder_->name) : QString()), tree_ ? tree_->volume : "local", [this] {
         findings_->clear();
         updateFolderSummary();
         emit message(tr("Done. Rescan to refresh this folder's findings."));
@@ -415,17 +417,19 @@ void CleanupView::cleanFolder() {
 
 // --- Shared -----------------------------------------------------------------------
 
-void CleanupView::run(std::vector<JournalOp> ops, const QString& title, std::function<void()> after) {
+void CleanupView::run(std::vector<JournalOp> ops, const QString& title, const std::string& volume, std::function<void()> after) {
     if (busy()) return;
     int64_t batch = 0;
+    FileSystem* fs = filesystemFor(volume);
     try {
+        if (!fs) throw std::runtime_error("This scan belongs to a NAS that is no longer saved.");
         journal_ = std::make_unique<Journal>(Journal::defaultPath());
-        batch = journal_->createBatch("clean", title.toStdString(), "local", ops);
+        batch = journal_->createBatch("clean", title.toStdString(), fs->volumeName(), ops);
     } catch (const std::exception& e) {
         QMessageBox::critical(this, tr("Clean Up"), qs(e.what()));
         return;
     }
-    executor_ = std::make_unique<Executor>(localFs(), *journal_);
+    executor_ = std::make_unique<Executor>(*fs, *journal_);
     setWorking(true);
     poll_->start();
     Executor* ex = executor_.get();

@@ -48,6 +48,19 @@ jobs:
           t=$(find build/release -type f \( -name storage_tests -o -name storage_tests.exe \) | head -1)
           "$t" sha256
 
+      - name: NAS over real ssh (localhost)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get install -y openssh-server >/dev/null
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh && chmod go-w ~
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/id_ed25519 -q
+          cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys
+          sudo systemctl start ssh || sudo service ssh start
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new localhost true
+          t=$(find build/release -type f -name storage_tests | head -1)
+          STORAGE_TEST_SSH_HOST=localhost "$t" ssh
+
       - name: CLI smoke test
         shell: bash
         run: |

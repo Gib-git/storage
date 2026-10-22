@@ -53,6 +53,8 @@ int main(int argc, char* argv[]) {
     cli.addOption(organizePreview);
     QCommandLineOption cleanupOpt("cleanup", "Open the Clean Up view and measure caches and junk");
     cli.addOption(cleanupOpt);
+    QCommandLineOption nasOpt("nas", "Open a saved NAS by name", "name");
+    cli.addOption(nasOpt);
     QCommandLineOption screenshot("screenshot", "Save a PNG of the window once the path is loaded, then quit", "file");
     cli.addOption(screenshot);
     QCommandLineOption writeIcons("write-icons", "Render the app icon as PNGs into a directory (build tooling)", "dir");
@@ -95,6 +97,7 @@ int main(int argc, char* argv[]) {
         });
     }
     if (cli.isSet(cleanupOpt)) w.showCleanupNow();
+    if (cli.isSet(nasOpt)) w.openNas(cli.value(nasOpt));
     if (!cli.positionalArguments().isEmpty()) w.openPath(cli.positionalArguments().first(), cli.isSet(rescan));
     return QApplication::exec();
 }

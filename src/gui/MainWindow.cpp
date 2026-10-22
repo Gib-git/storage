@@ -1,5 +1,7 @@
 #include "MainWindow.h"
 
+#include "NasDialog.h"
+
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
@@ -48,6 +50,8 @@
 #include "storage/core/format.hpp"
 #include "storage/core/index.hpp"
 #include "storage/core/paths.hpp"
+#include "storage/core/ssh_fs.hpp"
+#include "storage/core/volumes.hpp"
 #include "storage/core/version.hpp"
 
 using namespace storage;
@@ -143,7 +147,7 @@ void MainWindow::buildActions() {
     actRescan_ = new QAction(style->standardIcon(QStyle::SP_BrowserReload), tr("Rescan"), this);
     actRescan_->setShortcut(QKeySequence::Refresh);
     connect(actRescan_, &QAction::triggered, this, [this] {
-        if (tree_ && tree_->root) startScan(qs(tree_->root->name));
+        if (tree_ && tree_->root) startScan(qs(tree_->root->name), tree_->volume);
     });
 
     actStop_ = new QAction(style->standardIcon(QStyle::SP_BrowserStop), tr("Stop"), this);
@@ -169,6 +173,7 @@ void MainWindow::buildActions() {
     file->addAction(actScan_);
     file->addAction(actRescan_);
     file->addAction(actStop_);
+    file->addAction(tr("Add NAS…"), this, [this] { editNas({}); });
     file->addSeparator();
     file->addAction(actReveal_);
     file->addSeparator();
@@ -261,6 +266,10 @@ void MainWindow::buildUi() {
         returnToMode_ = modes_->currentIndex() == UsageMode ? -1 : modes_->currentIndex();
         scanner_->load(id);
     });
+    connect(sidebar_, &Sidebar::nasRequested, this, &MainWindow::openNas);
+    connect(sidebar_, &Sidebar::addNasRequested, this, [this] { editNas({}); });
+    connect(sidebar_, &Sidebar::editNasRequested, this, &MainWindow::editNas);
+    connect(sidebar_, &Sidebar::removeNasRequested, this, &MainWindow::removeNas);
     connect(sidebar_, &Sidebar::removeRequested, this, [this](qint64 id) {
         try {
             Index(defaultIndexPath()).remove(id);
@@ -506,10 +515,58 @@ void MainWindow::chooseFolder() {
     if (!dir.isEmpty()) startScan(QDir::toNativeSeparators(dir));
 }
 
-void MainWindow::startScan(const QString& path) {
+void MainWindow::startScan(const QString& path, const std::string& volume) {
     if (scanner_->busy()) return;
     pendingScanRoot_ = path;
-    scanner_->scan(path);
+    scanner_->scan(path, volume);
+}
+
+bool MainWindow::remote() const { return tree_ && !isLocalVolume(tree_->volume); }
+
+void MainWindow::openNas(const QString& name) {
+    for (const auto& cfg : loadNasConfigs()) {
+        if (QString::fromStdString(cfg.name) != name) continue;
+        if (modes_->currentIndex() == HistoryMode) setMode(UsageMode);
+        returnToMode_ = modes_->currentIndex() == UsageMode ? -1 : modes_->currentIndex();
+        try {
+            if (const int64_t id = Index(defaultIndexPath()).findScan(cfg.root, cfg.volume())) {
+                scanner_->load(id);  // instant; use Rescan for fresh numbers
+                return;
+            }
+        } catch (const std::exception&) {
+        }
+        startScan(qs(cfg.root), cfg.volume());
+        return;
+    }
+}
+
+void MainWindow::editNas(const QString& name) {
+    auto list = loadNasConfigs();
+    NasConfig current;
+    for (const auto& c : list)
+        if (qs(c.name) == name) current = c;
+    NasDialog dlg(current, this);
+    if (dlg.exec() != QDialog::Accepted) return;
+    const NasConfig updated = dlg.config();
+    list.erase(std::remove_if(list.begin(), list.end(),
+                              [&](const NasConfig& c) { return qs(c.name) == name || c.name == updated.name; }),
+               list.end());
+    list.push_back(updated);
+    saveNasConfigs(list);
+    sidebar_->reload();
+    if (name.isEmpty() &&
+        QMessageBox::question(this, kAppName, tr("Scan %1 now?").arg(qs(updated.name))) == QMessageBox::Yes)
+        openNas(qs(updated.name));
+}
+
+void MainWindow::removeNas(const QString& name) {
+    if (QMessageBox::question(this, kAppName, tr("Remove the NAS “%1”? Saved scans and history are kept.").arg(name)) !=
+        QMessageBox::Yes)
+        return;
+    auto list = loadNasConfigs();
+    list.erase(std::remove_if(list.begin(), list.end(), [&](const NasConfig& c) { return qs(c.name) == name; }), list.end());
+    saveNasConfigs(list);
+    sidebar_->reload();
 }
 
 void MainWindow::onScanStarted(const QString& what) {
@@ -641,7 +698,7 @@ void MainWindow::updateActions() {
     actScan_->setEnabled(!busy);
     actRescan_->setEnabled(!busy && tree_);
     actStop_->setEnabled(busy && !pendingScanRoot_.isEmpty());
-    actReveal_->setEnabled(!busy && current_);
+    actReveal_->setEnabled(!busy && current_ && !remote());
 }
 
 void MainWindow::updateSummary() {
@@ -659,7 +716,9 @@ void MainWindow::updateSummary() {
 // --- Context actions -------------------------------------------------------------
 
 QString MainWindow::nativePath(const Node* node) const {
-    return node ? QDir::toNativeSeparators(qs(node->path(nativeSeparator()))) : QString();
+    if (!node) return {};
+    if (remote()) return qs(node->path('/'));  // NAS paths are shown exactly as the NAS knows them
+    return QDir::toNativeSeparators(qs(node->path(nativeSeparator())));
 }
 
 void MainWindow::showContextMenu(Node* node, const QPoint& globalPos) {
@@ -667,8 +726,10 @@ void MainWindow::showContextMenu(Node* node, const QPoint& globalPos) {
     QMenu menu(this);
     if (node->isDir() && node != current_)
         menu.addAction(tr("Open “%1”").arg(qs(node->name)), this, [this, node] { navigate(node); });
-    menu.addAction(actReveal_->text(), this, [this, path] { revealInFileManager(path); });
-    menu.addAction(tr("Open with Default App"), this, [path] { QDesktopServices::openUrl(QUrl::fromLocalFile(path)); });
+    if (!remote()) {
+        menu.addAction(actReveal_->text(), this, [this, path] { revealInFileManager(path); });
+        menu.addAction(tr("Open with Default App"), this, [path] { QDesktopServices::openUrl(QUrl::fromLocalFile(path)); });
+    }
     menu.addSeparator();
     menu.addAction(tr("Copy Path"), this, [path] { QApplication::clipboard()->setText(path); });
     if (node->isDir()) {
@@ -681,7 +742,8 @@ void MainWindow::showContextMenu(Node* node, const QPoint& globalPos) {
             setMode(OrganizeMode);
             organize_->setScope(tree_, node);
         });
-        menu.addAction(tr("Scan This Folder Separately"), this, [this, path] { startScan(path); });
+        const std::string volume = tree_ ? tree_->volume : std::string("local");
+        menu.addAction(tr("Scan This Folder Separately"), this, [this, path, volume] { startScan(path, volume); });
     }
     menu.exec(globalPos);
 }

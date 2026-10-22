@@ -173,6 +173,16 @@ std::unique_ptr<ScanTree> Scanner::run() {
     Node* root = tree->root.get();
     root->name = d->opt.root;
 
+    if (auto walked = d->fs.walkTree(d->opt.root, d->cancelFlag, d->files, d->dirs, d->bytes)) {
+        walked->volume = d->fs.volumeName();
+        walked->started = tree->started;
+        walked->complete = !d->cancelFlag.load();
+        walked->finished = nowSeconds();
+        walked->finalize();
+        d->errors = walked->root ? walked->root->errors : 0;
+        return walked;
+    }
+
     DirEntry rootEntry;
     if (auto ec = d->fs.stat(d->opt.root, rootEntry)) {
         root->kind = NodeKind::Directory;

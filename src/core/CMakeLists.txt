@@ -18,8 +18,11 @@ add_library(storagecore STATIC
     src/node.cpp
     src/organize.cpp
     src/paths.cpp
+    src/process.cpp
     src/scanner.cpp
     src/sha256.cpp
+    src/volumes.cpp
+    src/ssh_fs.cpp
 )
 add_library(storage::core ALIAS storagecore)
 

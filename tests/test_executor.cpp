@@ -275,3 +275,22 @@ TEST_CASE("executor: survives being killed at any point (fork + _exit)") {
     }
 }
 #endif
+
+TEST_CASE("executor: recovery only touches batches of its own volume") {
+    TempTree t, j;
+    const auto f = t.file("f.txt", 10, 'f');
+    Journal journal(j.root() / "journal.db");
+    JournalOp op = opFor(Action::Trash, f);
+    const int64_t remote = journal.createBatch("dedupe", "remote", "ssh://nas", {op});
+    const int64_t local = journal.createBatch("dedupe", "local", "local", {op});
+    journal.setBatchState(remote, BatchState::Running);
+    journal.setBatchState(local, BatchState::Running);
+    for (const auto& o : journal.ops(remote)) journal.setOp(o.id, OpState::Started);
+
+    LocalFileSystem lfs;
+    const auto recovered = Executor::recover(lfs, journal);
+    CHECK(recovered == std::vector<int64_t>{local});
+    CHECK(journal.batch(remote).state == BatchState::Running);  // left for the NAS connection
+    CHECK(journal.ops(remote)[0].state == OpState::Started);
+    CHECK(journal.volumesWithRunningBatches() == std::vector<std::string>{"ssh://nas"});
+}
