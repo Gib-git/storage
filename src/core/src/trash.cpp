@@ -5,6 +5,7 @@
 
 #if defined(_WIN32)
 #include <windows.h>
+#include <shellapi.h>
 #include <shobjidl.h>
 #include <shlobj.h>
 #elif !defined(__APPLE__)

@@ -1,3 +1,4 @@
+#include <cstdio>
 #include <string>
 
 #include "check.hpp"
@@ -6,6 +7,7 @@
 using storage::Sha256;
 
 TEST_CASE("sha256 matches NIST vectors") {
+    std::printf("      (sha256 implementation: %s)\n", Sha256::implementation());
     CHECK(Sha256::hexOf("", 0) == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
     CHECK(Sha256::hexOf("abc", 3) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
     const std::string two = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";

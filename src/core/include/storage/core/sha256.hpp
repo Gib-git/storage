@@ -21,8 +21,11 @@ public:
     static std::string hex(const Digest& d);
     static std::string hexOf(const void* data, size_t len);
 
+    // Which compression routine this CPU uses: "armv8-sha2", "x86-sha-ni" or "portable".
+    static const char* implementation();
+
 private:
-    void block(const uint8_t* p);
+    void blocks(const uint8_t* p, size_t n);
 
     uint32_t h_[8];
     uint8_t buf_[64];

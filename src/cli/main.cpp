@@ -2,9 +2,11 @@
 // --Json so scripts, SSH sessions and AI agents can drive it.
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <csignal>
 #include <cstdio>
 #include <iostream>
+#include <sstream>
 #include <thread>
 
 #ifdef _WIN32
@@ -15,8 +17,11 @@
 #define STORAGE_ISATTY(f) isatty(fileno(f))
 #endif
 
+#include "storage/core/duplicates.hpp"
+#include "storage/core/executor.hpp"
 #include "storage/core/format.hpp"
 #include "storage/core/index.hpp"
+#include "storage/core/journal.hpp"
 #include "storage/core/json.hpp"
 #include "storage/core/paths.hpp"
 #include "storage/core/scanner.hpp"
@@ -42,6 +47,11 @@ struct Globals {
 
 std::filesystem::path dbPath(const Globals& g) {
     return g.db.empty() ? defaultIndexPath() : fromUtf8(g.db);
+}
+
+// The journal lives next to the index, so `--db` also isolates operation history.
+std::filesystem::path journalPath(const Globals& g) {
+    return g.db.empty() ? Journal::defaultPath() : fromUtf8(g.db).parent_path() / "journal.db";
 }
 
 std::unique_ptr<ScanTree> runScan(const std::string& root, unsigned threads, bool crossMounts, bool quiet) {
@@ -206,6 +216,267 @@ int cmdScans(const cli::Parsed&, const Globals& g) {
     return 0;
 }
 
+
+uint64_t parseSize(const std::string& s) {
+    if (s.empty()) throw cli::UsageError("empty size");
+    size_t used = 0;
+    double v = 0;
+    try {
+        v = std::stod(s, &used);
+    } catch (const std::exception&) {
+        throw cli::UsageError("bad size '" + s + "' (examples: 500K, 10M, 2G)");
+    }
+    std::string unit = s.substr(used);
+    for (auto& c : unit) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    if (!unit.empty() && unit.back() == 'B') unit.pop_back();
+    double mult = 1;
+    if (unit == "K") mult = 1024.0;
+    else if (unit == "M") mult = 1024.0 * 1024;
+    else if (unit == "G") mult = 1024.0 * 1024 * 1024;
+    else if (unit == "T") mult = 1024.0 * 1024 * 1024 * 1024;
+    else if (!unit.empty()) throw cli::UsageError("bad size unit in '" + s + "'");
+    return static_cast<uint64_t>(v * mult);
+}
+
+std::vector<std::string> splitList(const std::string& s) {
+    std::vector<std::string> out;
+    std::stringstream ss(s);
+    for (std::string item; std::getline(ss, item, ',');)
+        if (!item.empty()) out.push_back(item);
+    return out;
+}
+
+bool confirm(const std::string& question) {
+    if (!STORAGE_ISATTY(stdin)) return false;
+    std::fprintf(stderr, "%s [y/N] ", question.c_str());
+    std::string answer;
+    std::getline(std::cin, answer);
+    return !answer.empty() && (answer[0] == 'y' || answer[0] == 'Y');
+}
+
+// Finish anything a crash left half-done before starting new work.
+void recoverJournal(Journal& journal, bool quiet) {
+    LocalFileSystem fs;
+    for (int64_t id : Executor::recover(fs, journal))
+        if (!quiet)
+            std::fprintf(stderr, "note: batch %lld was interrupted; resume it with `storagectl resume %lld`\n",
+                         static_cast<long long>(id), static_cast<long long>(id));
+}
+
+Json batchJson(const JournalBatch& b) {
+    return Json::object({{"id", b.id},         {"kind", b.kind},       {"title", b.title},     {"state", b.state},
+                         {"created", b.created}, {"finished", b.finished}, {"total", b.total},   {"done", b.done},
+                         {"failed", b.failed}, {"skipped", b.skipped}, {"undone", b.undone}, {"bytes", b.bytes}});
+}
+
+void printResult(const char* verb, const ExecResult& r) {
+    std::printf("%s %d, skipped %d, failed %d — %s%s\n", verb, r.done, r.skipped, r.failed, humanSize(r.bytes).c_str(),
+                r.cancelled ? " (stopped early)" : "");
+}
+
+// Run a batch with a progress line; Ctrl-C stops after the current file.
+std::atomic<Executor*> gActiveExecutor{nullptr};
+void onExecSignal(int) {
+    if (Executor* e = gActiveExecutor.load()) e->cancel();
+}
+
+template <typename Fn>
+ExecResult runWithProgress(Executor& ex, bool quiet, Fn fn) {
+    gActiveExecutor = &ex;
+    std::signal(SIGINT, onExecSignal);
+    ExecResult result;
+    std::atomic<bool> finished{false};
+    std::thread worker([&] {
+        result = fn();
+        finished = true;
+    });
+    const bool show = !quiet && STORAGE_ISATTY(stderr);
+    while (!finished) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+        if (show && !finished) {
+            const auto p = ex.progress();
+            std::fprintf(stderr, "\r\033[2K%d/%d  %s", p.done, p.total, p.current.substr(0, 90).c_str());
+            std::fflush(stderr);
+        }
+    }
+    worker.join();
+    if (show) std::fprintf(stderr, "\r\033[2K");
+    gActiveExecutor = nullptr;
+    std::signal(SIGINT, SIG_DFL);
+    return result;
+}
+
+int cmdDupes(const cli::Parsed& p, const Globals& g) {
+    const std::string target = normalizeLocalPath(p.positional[0]);
+    DupOptions opt;
+    opt.minSize = std::max<uint64_t>(1, parseSize(p.value("min-size", "1")));
+    opt.verifyBytes = p.has("paranoid");
+    opt.skipHidden = p.has("skip-hidden");
+    opt.excludeNames = splitList(p.value("exclude", ".git,.svn,.hg,node_modules"));
+    opt.threads = static_cast<unsigned>(p.number("threads", 0));
+    const KeepRule rule = parseKeepRule(p.value("keep", "oldest"));
+    std::vector<std::string> prefer;
+    for (const auto& f : splitList(p.value("prefer"))) prefer.push_back(normalizeLocalPath(f));
+    const std::string action = p.value("action", Action::Trash);
+    if (action != Action::Trash && action != Action::Delete && action != Action::Hardlink && action != Action::Clone)
+        throw cli::UsageError("--action must be trash, delete, hardlink or clone");
+
+    std::unique_ptr<ScanTree> tree = runScan(target, 0, false, g.json);
+    LocalFileSystem fs;
+    Index index(dbPath(g));
+    DuplicateFinder finder(fs, opt, &index);
+
+    std::vector<DupGroup> groups;
+    std::atomic<bool> finished{false};
+    std::thread worker([&] {
+        groups = finder.run(*tree->root);
+        finished = true;
+    });
+    const bool show = !g.json && STORAGE_ISATTY(stderr);
+    while (!finished) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+        if (show && !finished) {
+            const auto pr = finder.progress();
+            std::fprintf(stderr, "\r\033[2K%s… %s/%s files  %s/%s", stageName(pr.stage),
+                         withThousands(pr.filesDone).c_str(), withThousands(pr.filesTotal).c_str(),
+                         humanSize(pr.bytesDone).c_str(), humanSize(pr.bytesTotal).c_str());
+            std::fflush(stderr);
+        }
+    }
+    worker.join();
+    if (show) std::fprintf(stderr, "\r\033[2K");
+
+    // Selection: keep one per group by rule, remove the rest.
+    std::vector<std::vector<bool>> remove(groups.size());
+    uint64_t reclaim = 0;
+    size_t removeCount = 0;
+    for (size_t i = 0; i < groups.size(); ++i) {
+        const size_t keep = chooseKeeper(groups[i], rule, prefer);
+        remove[i].assign(groups[i].files.size(), true);
+        remove[i][keep] = false;
+        reclaim += groups[i].reclaimable();
+        removeCount += groups[i].files.size() - 1;
+    }
+
+    const bool apply = p.has("apply");
+    if (g.json && !apply) {
+        Json arr = Json::array();
+        for (size_t i = 0; i < groups.size(); ++i) {
+            Json files = Json::array();
+            for (size_t k = 0; k < groups[i].files.size(); ++k) {
+                const auto& f = groups[i].files[k];
+                files.push_back(Json::object({{"path", f.path}, {"mtime", f.mtime}, {"keep", !remove[i][k]}}));
+            }
+            arr.push_back(Json::object({{"size", groups[i].size},
+                                        {"hash", groups[i].hash},
+                                        {"reclaimable", groups[i].reclaimable()},
+                                        {"files", std::move(files)}}));
+        }
+        std::cout << Json::object({{"groups", std::move(arr)},
+                                   {"reclaimable", reclaim},
+                                   {"keep_rule", keepRuleName(rule)},
+                                   {"action", action},
+                                   {"applied", false}})
+                         .dump(2)
+                  << "\n";
+        return 0;
+    }
+
+    if (!g.json) {
+        const size_t limit = static_cast<size_t>(std::max(0LL, p.number("top", 20)));
+        for (size_t i = 0; i < groups.size() && i < limit; ++i) {
+            const auto& gr = groups[i];
+            std::printf("\n%s × %zu  (%s reclaimable)\n", humanSize(gr.size).c_str(), gr.files.size(),
+                        humanSize(gr.reclaimable()).c_str());
+            for (size_t k = 0; k < gr.files.size(); ++k)
+                std::printf("  %s %s\n", remove[i][k] ? "✗" : "✓", gr.files[k].path.c_str());
+        }
+        if (groups.size() > limit) std::printf("\n… and %zu more groups\n", groups.size() - limit);
+        std::printf("\n%zu duplicate groups · %zu extra copies · %s reclaimable (keeping %s)\n", groups.size(),
+                    removeCount, humanSize(reclaim).c_str(), keepRuleName(rule));
+    }
+    if (!apply || groups.empty()) {
+        if (!g.json && !groups.empty())
+            std::printf("Dry run. Add --apply to %s the ✗ files.\n", action == Action::Trash ? "move to Trash" : action.c_str());
+        return 0;
+    }
+
+    if (!p.has("yes") &&
+        !confirm(action == Action::Delete ? "Permanently delete " + std::to_string(removeCount) + " files?"
+                                          : "Apply '" + action + "' to " + std::to_string(removeCount) + " files?")) {
+        std::fprintf(stderr, "Nothing changed. (Use --yes to skip this question.)\n");
+        return 1;
+    }
+
+    Journal journal(journalPath(g));
+    recoverJournal(journal, g.json);
+    auto ops = planDedupe(groups, remove, action);
+    const int64_t batch = journal.createBatch("dedupe", "Duplicates in " + target + " (" + action + ")", "local", ops);
+    ExecOptions eo;
+    eo.verifyContent = !p.has("no-verify");
+    Executor ex(fs, journal, eo);
+    const ExecResult r = runWithProgress(ex, g.json, [&] { return ex.run(batch); });
+    if (g.json) {
+        Json out = batchJson(journal.batch(batch));
+        out["applied"] = true;
+        std::cout << out.dump(2) << "\n";
+    } else {
+        printResult("Done", r);
+        std::printf("Batch %lld — undo with `storagectl undo %lld`\n", static_cast<long long>(batch),
+                    static_cast<long long>(batch));
+    }
+    return r.failed ? 1 : 0;
+}
+
+int cmdHistory(const cli::Parsed& p, const Globals& g) {
+    Journal journal(journalPath(g));
+    recoverJournal(journal, g.json);
+    const auto list = journal.batches(static_cast<int>(p.number("limit", 30)));
+    if (g.json) {
+        Json arr = Json::array();
+        for (const auto& b : list) arr.push_back(batchJson(b));
+        std::cout << arr.dump(2) << "\n";
+        return 0;
+    }
+    if (list.empty()) {
+        std::printf("No operations yet.\n");
+        return 0;
+    }
+    std::printf("%5s  %-16s  %-11s  %6s  %6s  %10s  %s\n", "ID", "WHEN", "STATE", "DONE", "OTHER", "SIZE", "WHAT");
+    for (const auto& b : list)
+        std::printf("%5lld  %-16s  %-11s  %6d  %6d  %10s  %s\n", static_cast<long long>(b.id), formatTime(b.created).c_str(),
+                    b.state.c_str(), b.done, b.failed + b.skipped, humanSize(b.bytes).c_str(), b.title.c_str());
+    if (p.has("verbose") || list.size() == 1) {
+        for (const auto& op : journal.ops(list.front().id))
+            std::printf("  %-8s %-8s %s%s%s\n", op.state.c_str(), op.action.c_str(), op.src.c_str(),
+                        op.detail.empty() ? "" : "  — ", op.detail.c_str());
+    }
+    return 0;
+}
+
+int cmdUndoResume(const cli::Parsed& p, const Globals& g, bool undo) {
+    long long id = 0;
+    try {
+        id = std::stoll(p.positional[0]);
+    } catch (const std::exception&) {
+        throw cli::UsageError("batch id must be a number (see `storagectl history`)");
+    }
+    Journal journal(journalPath(g));
+    recoverJournal(journal, true);
+    const JournalBatch b = journal.batch(id);
+    if (!undo && b.state == BatchState::Done) {
+        std::printf("Batch %lld already finished.\n", id);
+        return 0;
+    }
+    if (!p.has("yes") && !confirm(std::string(undo ? "Undo" : "Resume") + " \"" + b.title + "\"?")) return 1;
+    LocalFileSystem fs;
+    Executor ex(fs, journal);
+    const ExecResult r = runWithProgress(ex, g.json, [&] { return undo ? ex.undo(id) : ex.run(id); });
+    if (g.json) std::cout << batchJson(journal.batch(id)).dump(2) << "\n";
+    else printResult(undo ? "Reverted" : "Done", r);
+    return r.failed ? 1 : 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -232,6 +503,28 @@ int main(int argc, char** argv) {
 
     parser.add("scans", "List scans saved in the index");
 
+    parser.add("dupes", "Find duplicate files (dry run unless --apply)")
+        .positional("path")
+        .option("min-size", 0, "SIZE", "Ignore files smaller than this, e.g. 100K, 5M (default 1 byte)")
+        .option("keep", 'k', "RULE", "Which copy to keep: oldest (default), newest, shortest, longest, alpha, folder")
+        .option("prefer", 0, "DIRS", "With --keep folder: comma-separated folders whose copies are kept")
+        .option("action", 'a', "ACTION", "trash (default), hardlink, clone or delete")
+        .option("exclude", 0, "NAMES", "Folder names to skip (default .git,.svn,.hg,node_modules)")
+        .option("top", 'n', "N", "Groups to print (default 20)")
+        .option("threads", 'j', "N", "Hashing threads (default up to 4; use 1 for spinning disks)")
+        .flag("skip-hidden", 0, "Ignore dot-files and dot-folders")
+        .flag("paranoid", 0, "Confirm duplicates byte by byte after hashing")
+        .flag("apply", 0, "Actually perform the action (journaled, undoable)")
+        .flag("yes", 'y', "Do not ask for confirmation")
+        .flag("no-verify", 0, "Skip re-hashing right before delete/hardlink/clone");
+
+    parser.add("history", "List journaled operations")
+        .option("limit", 0, "N", "How many batches (default 30)")
+        .flag("verbose", 'v', "Show the operations of the latest batch");
+
+    parser.add("undo", "Revert a batch of operations").positional("batch").flag("yes", 'y', "Do not ask for confirmation");
+    parser.add("resume", "Finish an interrupted batch").positional("batch").flag("yes", 'y', "Do not ask for confirmation");
+
     Globals g;
     cli::Parsed p;
     try {
@@ -256,6 +549,10 @@ int main(int argc, char** argv) {
         if (p.command == "scan") return cmdScan(p, g);
         if (p.command == "du") return cmdDu(p, g);
         if (p.command == "scans") return cmdScans(p, g);
+        if (p.command == "dupes") return cmdDupes(p, g);
+        if (p.command == "history") return cmdHistory(p, g);
+        if (p.command == "undo") return cmdUndoResume(p, g, true);
+        if (p.command == "resume") return cmdUndoResume(p, g, false);
     } catch (const cli::UsageError& e) {
         std::fprintf(stderr, "error: %s\n", e.what());
         return 2;
