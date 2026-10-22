@@ -1,0 +1,17 @@
+# Build output
+build/
+out/
+cmake-build-*/
+_deps/
+
+# IDE / local tooling
+.claude/
+.vscode/
+.idea/
+*.user
+.DS_Store
+
+# Local data
+*.db
+*.db-wal
+*.db-shm

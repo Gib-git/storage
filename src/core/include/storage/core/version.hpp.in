@@ -1,0 +1,7 @@
+#pragma once
+
+namespace storage {
+inline constexpr const char* kVersion = "@PROJECT_VERSION@";
+inline constexpr const char* kAppName = "Storage";
+inline constexpr const char* kHomepage = "@PROJECT_HOMEPAGE_URL@";
+}  // namespace storage
