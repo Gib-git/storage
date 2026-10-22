@@ -4,6 +4,8 @@ A small, fast, cross-platform (macOS · Linux · Windows) app that indexes your 
 shows what is using space, finds duplicates, cleans junk and reorganizes folders — **without
 ever losing a file**, even if the power goes out halfway through.
 
+![Storage showing a home folder: size tree, treemap coloured by file type, and drives in the sidebar](docs/images/disk-usage.png)
+
 > Status: **1.0** — all seven roadmap phases are complete (see [Roadmap](#roadmap)).
 
 ## Features
@@ -26,6 +28,24 @@ ever losing a file**, even if the power goes out halfway through.
 - **Automation.** `storagectl` with `--json`, an MCP server for Claude, and a localhost REST API,
   all with plan → confirm → apply.
 - **Small.** About 1 MB CLI and about 25 MB desktop app. No runtime dependencies.
+
+## Screenshots
+
+**Duplicates.** Confirmed by content. The kept copy is chosen by a rule, and extra copies are
+struck through until you act.
+
+![Duplicate groups with the extra copies marked for removal](docs/images/duplicates.png)
+
+**Organize.** Pick or write rules and see exactly where everything will go before anything moves.
+
+![Organize preview for a Downloads folder, grouped into Applications, Archives, Documents and more](docs/images/organize.png)
+
+**Clean Up.** Caches and junk are measured and marked Safe, Review or Caution. Commands that
+need admin rights are listed for you to copy and run.
+
+![Clean Up view listing app caches, logs and developer caches with their sizes and safety levels](docs/images/cleanup.png)
+
+*Screenshots show a demo home folder.*
 
 | Area | Docs |
 |---|---|

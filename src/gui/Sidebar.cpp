@@ -82,8 +82,11 @@ void Sidebar::reload() {
     addPlace(QStandardPaths::MoviesLocation, tr("Videos"));
 
     auto* volumes = section(tr("Drives"));
+    // STORAGE_DEMO=1 (used for documentation screenshots) lists only the system drive.
+    const bool demo = qEnvironmentVariableIntValue("STORAGE_DEMO") == 1;
     for (const QStorageInfo& v : QStorageInfo::mountedVolumes()) {
         if (!interestingVolume(v)) continue;
+        if (demo && !v.isRoot()) continue;
         QString name = v.displayName();
         if (name.isEmpty() || name == v.rootPath()) name = v.isRoot() ? tr("System Drive") : v.rootPath();
         auto* it = new QTreeWidgetItem(volumes, {name});

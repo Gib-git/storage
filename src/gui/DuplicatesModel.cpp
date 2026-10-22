@@ -155,8 +155,13 @@ QVariant DuplicatesModel::data(const QModelIndex& index, int role) const {
         switch (role) {
             case Qt::DisplayRole:
                 switch (index.column()) {
-                    case Name:
-                        return tr("%1  —  %2 copies").arg(QFileInfo(qs(g.files.front().path)).fileName()).arg(g.files.size());
+                    case Name: {
+                        // Title the group after the copy being kept.
+                        size_t kept = 0;
+                        while (kept < sel.size() && sel[kept]) ++kept;
+                        const auto& f = g.files[kept < g.files.size() ? kept : 0];
+                        return tr("%1  —  %2 copies").arg(QFileInfo(qs(f.path)).fileName()).arg(g.files.size());
+                    }
                     case Size: return qs(humanSize(g.size)) + tr(" each");
                     case Modified: return removing ? tr("%n to remove", nullptr, removing) : QString();
                     case Folder: return tr("%1 reclaimable").arg(qs(humanSize(g.reclaimable())));
