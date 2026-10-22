@@ -52,7 +52,7 @@ TEST_CASE("api: plan, confirm, apply and undo through MCP") {
     Service svc(db.root() / "index.db", db.root() / "journal.db");
     const std::string path = toUtf8(t.root());
 
-    auto r = mcp(svc, {R"({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"find_duplicates","arguments":{"path":)" +
+    auto r = mcp(svc, {R"({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"find_duplicates","arguments":{"action":"hardlink","path":)" +
                        Value(path).dump() + R"(}}})"});
     REQUIRE(r.size() == 1);
     const Value found = toolResult(r[0]);
@@ -71,8 +71,7 @@ TEST_CASE("api: plan, confirm, apply and undo through MCP") {
     CHECK(fs::exists(t.root() / "b" / "photo-copy.jpg"));
 
     const Value applied = svc.call("apply_plan", Value::object({{"plan_id", plan}, {"confirm", true}}));
-    CHECK(applied.get("done").asInt() == 1);
-    CHECK(!fs::exists(t.root() / "b" / "photo-copy.jpg") || !fs::exists(t.root() / "a" / "photo.jpg"));
+    CHECK(applied.get("done").asInt() == 1);  // hard links: undoable on every OS (the Windows Recycle Bin is not)
 
     // A plan runs at most once.
     bool reused = false;
