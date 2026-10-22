@@ -1,5 +1,7 @@
 #include "storage/core/executor.hpp"
 
+#include "storage/core/organize.hpp"
+
 namespace storage {
 
 namespace {
@@ -90,7 +92,43 @@ ExecResult Executor::run(int64_t batch) {
     return r;
 }
 
+Executor::Outcome Executor::performRemoveDir(const JournalOp& op, std::string& detail) {
+    std::vector<DirEntry> entries;
+    if (fs_.list(op.src, entries)) {
+        detail = "already gone";
+        return Outcome::Skipped;
+    }
+    for (const auto& e : entries) {
+        if (e.kind != NodeKind::File || !isJunkFile(e.name)) {
+            detail = "not empty";
+            return Outcome::Skipped;
+        }
+    }
+    for (const auto& e : entries) fs_.removeFile(fs_.join(op.src, e.name));  // .DS_Store, Thumbs.db, desktop.ini
+    if (auto ec = fs_.removeDir(op.src)) {
+        detail = ec.message();
+        return Outcome::Failed;
+    }
+    detail = "removed empty folder";
+    return Outcome::Done;
+}
+
 Executor::Outcome Executor::perform(JournalOp& op, std::string& detail, std::string* newDst) {
+    if (op.action == Action::RemoveDir) return performRemoveDir(op, detail);
+    if (op.action == Action::MakeDir) {
+        DirEntry e;
+        if (!fs_.stat(op.src, e)) {
+            detail = "already existed";  // skipped => undo leaves it alone
+            return Outcome::Skipped;
+        }
+        if (auto ec = fs_.makeDirs(op.src)) {
+            detail = ec.message();
+            return Outcome::Failed;
+        }
+        detail = "created folder";
+        return Outcome::Done;
+    }
+
     // 1. The file must be exactly what the plan saw.
     DirEntry src;
     if (!exists(fs_, op.src, &src)) {
@@ -292,6 +330,11 @@ Executor::Outcome Executor::reverse(JournalOp& op, std::string& detail) {
     } else if (op.action == Action::Delete) {
         detail = "permanently deleted files cannot be restored";
         return Outcome::Skipped;
+    } else if (op.action == Action::RemoveDir) {
+        ec = fs_.makeDirs(op.src);
+        if (!ec) detail = "folder recreated";
+    } else if (op.action == Action::MakeDir) {
+        return performRemoveDir(op, detail);  // only removes it if it is empty again
     } else if (op.action == Action::Hardlink || op.action == Action::Clone) {
         DirEntry ref;
         if (!exists(fs_, op.ref, &ref) || ref.size != op.size) {
@@ -350,7 +393,11 @@ std::vector<int64_t> Executor::recover(FileSystem& fs, Journal& journal) {
                 const bool linked = srcThere && exists(fs, op.ref, &r) && !fs.stat(op.src, s) && s.ino && s.ino == r.ino;
                 journal.setOp(op.id, linked ? OpState::Done : OpState::Pending,
                               linked ? "replaced with a hard link (completed before interruption)" : "interrupted; will retry");
-            } else if (op.action == Action::Trash || op.action == Action::Delete) {
+            } else if (op.action == Action::MakeDir) {
+                // Unknown whether we created it: retry, which marks it skipped if it exists,
+                // so undo can never remove a folder that was there before.
+                journal.setOp(op.id, OpState::Pending, "interrupted; will retry");
+            } else if (op.action == Action::Trash || op.action == Action::Delete || op.action == Action::RemoveDir) {
                 journal.setOp(op.id, srcThere ? OpState::Pending : OpState::Done,
                               srcThere ? "interrupted; will retry" : "completed before interruption");
             } else {

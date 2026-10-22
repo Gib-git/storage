@@ -3,6 +3,7 @@
 #include <cstring>
 #include <memory>
 
+#include "storage/core/file_io.hpp"
 #include "storage/core/filesystem.hpp"
 #include "storage/core/paths.hpp"
 
@@ -285,6 +286,22 @@ std::error_code LocalFileSystem::renameNoReplace(const std::string& from, const 
 std::error_code LocalFileSystem::copyNew(const std::string& from, const std::string& to,
                                          const std::atomic<bool>* cancel) {
     return local::copyFile(from, to, cancel);
+}
+
+std::error_code LocalFileSystem::readHead(const std::string& path, size_t max, std::string& out) {
+    InputFile f;
+    if (auto ec = f.open(path)) return ec;
+    out.resize(max);
+    std::error_code ec;
+    const size_t n = f.read(out.data(), max, ec);
+    out.resize(n);
+    return ec;
+}
+
+std::error_code LocalFileSystem::removeDir(const std::string& dir) {
+    std::error_code ec;
+    if (!std::filesystem::remove(fromUtf8(dir), ec) && !ec) ec = std::make_error_code(std::errc::no_such_file_or_directory);
+    return ec;
 }
 
 std::error_code LocalFileSystem::trash(const std::string& path, std::string& location) {

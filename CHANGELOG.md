@@ -2,6 +2,35 @@
 
 All notable changes are listed here. Each phase of the roadmap ships as a release.
 
+## [0.3.0] — Phase 3: Organizer
+
+### Added
+- **Organize view** (Ctrl/⌘+3; History moves to Ctrl/⌘+4)
+  - Six built-in rule sets: *By file type*, *By type, then year*, *Photos & videos by date*,
+    *By year and month*, *By extension*, *Tidy Downloads*
+  - Rule editor: match by kind of file, extension, name text, regular expression, size and age;
+    send matches to a folder template, rename them, or leave them where they are
+  - "Everything else" fallback, organize in place or into another folder, choose date source,
+    keep-both or skip on name clashes, include subfolders, remove emptied folders, hidden files
+  - Live **After organizing** preview tree before anything moves
+  - Save, import and export your own rule sets (JSON, in the app data `rules/` folder)
+- Templates: `{type} {ext} {EXT} {name} {filename} {year} {month} {day} {monthname} {size} {first} {parent}`
+- Photos are dated by their **EXIF "date taken"** (JPEG and TIFF-based RAW: DNG, CR2, NEF, ARW…),
+  read in parallel; other files use the modified date
+- **CLI**: `storagectl organize <path> [--preset NAME | --rules FILE] [--dest DIR] [--apply]`,
+  `storagectl presets [--show NAME]`
+- `Storage <path> --organize` opens a folder straight into an organize preview
+
+### Safety
+- App bundles, photo/music/video libraries, `.git`, `node_modules` and similar packages are never
+  moved into or out of
+- File and folder names are made safe for every OS (reserved names, illegal characters, length)
+- Name clashes are resolved in the plan (`name (2).ext`), and the executor still refuses to
+  overwrite at run time
+- Folders the organizer creates are journaled; **undo removes them again** (never a folder that
+  existed before). Emptied source folders are removed only if nothing but OS junk
+  (`.DS_Store`, `Thumbs.db`, `desktop.ini`) is left, and are recreated on undo
+
 ## [0.2.0] — Phase 2: Duplicates
 
 ### Added

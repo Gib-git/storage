@@ -5,6 +5,7 @@ add_executable(storage_tests
     test_format.cpp
     test_index.cpp
     test_json.cpp
+    test_organize.cpp
     test_scanner.cpp
     test_sha256.cpp
 )

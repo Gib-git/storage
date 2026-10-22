@@ -11,6 +11,7 @@
 class BreadcrumbBar;
 class DuplicatesView;
 class HistoryView;
+class OrganizeView;
 class CategoryBar;
 class QAction;
 class QLabel;
@@ -33,10 +34,13 @@ public:
     void openPath(const QString& path, bool forceRescan);
     // Switch to the Duplicates view for the current folder and start searching.
     void findDuplicatesNow();
+    // Switch to the Organize view for the current folder and preview the selected rules.
+    void previewOrganizeNow();
 
 signals:
     void scanFinished(bool ok);
     void duplicatesFound(int groups);
+    void organizePreviewReady(int moves);
 
 protected:
     void closeEvent(QCloseEvent* e) override;
@@ -71,7 +75,7 @@ private:
     void setThemeMode(int mode);
     void showAbout();
 
-    enum Mode { UsageMode = 0, DuplicatesMode = 1, HistoryMode = 2 };
+    enum Mode { UsageMode = 0, DuplicatesMode = 1, OrganizeMode = 2, HistoryMode = 3, ModeCount = 4 };
     void setMode(Mode m);
     void recoverInterruptedWork();
 
@@ -82,12 +86,13 @@ private:
     QString pendingScanRoot_;
 
     Sidebar* sidebar_ = nullptr;
-    QStackedWidget* modes_ = nullptr;   // Usage / Duplicates / History
+    QStackedWidget* modes_ = nullptr;   // Usage / Duplicates / Organize / History
     QStackedWidget* stack_ = nullptr;   // Usage: welcome / progress / browser
     DuplicatesView* dupes_ = nullptr;
+    OrganizeView* organize_ = nullptr;
     HistoryView* history_ = nullptr;
-    QAction* modeActions_[3] = {};
-    bool returnToDuplicates_ = false;
+    QAction* modeActions_[ModeCount] = {};
+    int returnToMode_ = -1;  // mode to go back to after a scan started from another view
     BreadcrumbBar* crumbs_ = nullptr;
     QLabel* summary_ = nullptr;
     QTreeView* view_ = nullptr;

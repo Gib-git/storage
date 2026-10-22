@@ -49,6 +49,8 @@ int main(int argc, char* argv[]) {
     cli.addOption(rescan);
     QCommandLineOption findDupes("find-duplicates", "After opening the path, search it for duplicates");
     cli.addOption(findDupes);
+    QCommandLineOption organizePreview("organize", "After opening the path, preview organizing it with the default rules");
+    cli.addOption(organizePreview);
     QCommandLineOption screenshot("screenshot", "Save a PNG of the window once the path is loaded, then quit", "file");
     cli.addOption(screenshot);
     QCommandLineOption writeIcons("write-icons", "Render the app icon as PNGs into a directory (build tooling)", "dir");
@@ -76,12 +78,18 @@ int main(int argc, char* argv[]) {
             });
         };
         if (cli.isSet(findDupes)) QObject::connect(&w, &MainWindow::duplicatesFound, &w, [shoot](int) { shoot(true); });
+        else if (cli.isSet(organizePreview))
+            QObject::connect(&w, &MainWindow::organizePreviewReady, &w, [shoot](int) { shoot(true); });
         else QObject::connect(&w, &MainWindow::scanFinished, &w, shoot);
     }
-    if (cli.isSet(findDupes))
-        QObject::connect(&w, &MainWindow::scanFinished, &w, [&w](bool ok) {
-            if (ok) w.findDuplicatesNow();
+    if (cli.isSet(findDupes) || cli.isSet(organizePreview)) {
+        const bool dupes = cli.isSet(findDupes);
+        QObject::connect(&w, &MainWindow::scanFinished, &w, [&w, dupes](bool ok) {
+            if (!ok) return;
+            if (dupes) w.findDuplicatesNow();
+            else w.previewOrganizeNow();
         });
+    }
     if (!cli.positionalArguments().isEmpty()) w.openPath(cli.positionalArguments().first(), cli.isSet(rescan));
     return QApplication::exec();
 }

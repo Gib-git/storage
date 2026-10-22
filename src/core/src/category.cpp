@@ -23,11 +23,11 @@ const std::unordered_map<std::string, Category>& table() {
         add(Category::Document, {"pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp", "rtf",
                                  "txt", "md", "csv", "pages", "numbers", "key", "epub", "mobi", "tex"});
         add(Category::Archive, {"zip", "rar", "7z", "tar", "gz", "tgz", "bz2", "xz", "zst", "lz4", "iso",
-                                "dmg", "img", "cab"});
+                                "img", "cab"});
         add(Category::Code, {"c", "cc", "cpp", "cxx", "h", "hpp", "py", "js", "mjs", "ts", "tsx", "jsx", "java",
                              "kt", "go", "rs", "rb", "php", "cs", "swift", "m", "mm", "sh", "ps1", "json",
                              "yaml", "yml", "toml", "xml", "html", "css", "scss", "sql", "lua", "dart"});
-        add(Category::Application, {"app", "exe", "msi", "pkg", "deb", "rpm", "appimage", "apk", "ipa",
+        add(Category::Application, {"app", "dmg", "exe", "msi", "pkg", "deb", "rpm", "appimage", "apk", "ipa",
                                     "jar", "bat", "com"});
         add(Category::System, {"dll", "so", "dylib", "sys", "drv", "o", "obj", "a", "lib", "pdb", "log",
                                "tmp", "cache", "db", "sqlite", "plist", "ini", "cfg", "dat", "bak"});

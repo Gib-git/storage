@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(Storage
-    VERSION 0.2.0
+    VERSION 0.3.0
     DESCRIPTION "Index, deduplicate, organize and clean your disks and NAS"
     HOMEPAGE_URL "https://github.com/Gib-git/storage"
     LANGUAGES C CXX)

@@ -8,12 +8,14 @@ add_library(storagecore STATIC
     src/journal.cpp
     src/json.cpp
     src/duplicates.cpp
+    src/exif.cpp
     src/executor.cpp
     src/file_io.cpp
     src/local_fs.cpp
     src/local_hash.cpp
     src/local_ops.cpp
     src/node.cpp
+    src/organize.cpp
     src/paths.cpp
     src/scanner.cpp
     src/sha256.cpp

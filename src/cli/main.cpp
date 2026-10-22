@@ -5,6 +5,7 @@
 #include <cctype>
 #include <csignal>
 #include <cstdio>
+#include <fstream>
 #include <iostream>
 #include <sstream>
 #include <thread>
@@ -23,6 +24,7 @@
 #include "storage/core/index.hpp"
 #include "storage/core/journal.hpp"
 #include "storage/core/json.hpp"
+#include "storage/core/organize.hpp"
 #include "storage/core/paths.hpp"
 #include "storage/core/scanner.hpp"
 #include "storage/core/version.hpp"
@@ -270,7 +272,7 @@ Json batchJson(const JournalBatch& b) {
 }
 
 void printResult(const char* verb, const ExecResult& r) {
-    std::printf("%s %d, skipped %d, failed %d — %s%s\n", verb, r.done, r.skipped, r.failed, humanSize(r.bytes).c_str(),
+    std::printf("%s %d operations, skipped %d, failed %d — %s%s\n", verb, r.done, r.skipped, r.failed, humanSize(r.bytes).c_str(),
                 r.cancelled ? " (stopped early)" : "");
 }
 
@@ -428,6 +430,124 @@ int cmdDupes(const cli::Parsed& p, const Globals& g) {
     return r.failed ? 1 : 0;
 }
 
+
+RuleSet loadRules(const cli::Parsed& p) {
+    if (p.values.count("rules")) {
+        std::ifstream f(fromUtf8(p.value("rules")), std::ios::binary);
+        if (!f) throw std::runtime_error("cannot read " + p.value("rules"));
+        std::stringstream ss;
+        ss << f.rdbuf();
+        return RuleSet::fromJson(Json::parse(ss.str()));
+    }
+    const std::string name = p.value("preset", "By file type");
+    auto lower = [](std::string s) {
+        for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return s;
+    };
+    const std::string wanted = lower(name);
+    for (const auto& preset : builtinPresets()) {
+        const std::string n = lower(preset.name);
+        if (n == wanted) return preset;
+    }
+    for (const auto& preset : builtinPresets())  // unique prefix / word match: "tidy", "photos"
+        if (lower(preset.name).find(wanted) != std::string::npos) return preset;
+    throw cli::UsageError("unknown preset '" + name + "' (see `storagectl presets`)");
+}
+
+int cmdPresets(const cli::Parsed& p, const Globals& g) {
+    const auto presets = builtinPresets();
+    if (p.values.count("show")) {
+        cli::Parsed q;
+        q.values["preset"] = p.value("show");
+        std::cout << loadRules(q).toJson().dump(2) << "\n";
+        return 0;
+    }
+    if (g.json) {
+        Json arr = Json::array();
+        for (const auto& r : presets) arr.push_back(r.toJson());
+        std::cout << arr.dump(2) << "\n";
+        return 0;
+    }
+    for (const auto& r : presets) std::printf("%-26s %s\n", r.name.c_str(), r.description.c_str());
+    std::printf("\nCustomize: storagectl presets --show \"By file type\" > my.json, edit, then --rules my.json\n");
+    return 0;
+}
+
+int cmdOrganize(const cli::Parsed& p, const Globals& g) {
+    const std::string target = normalizeLocalPath(p.positional[0]);
+    const RuleSet rules = loadRules(p);
+    const std::string dest = p.values.count("dest") ? normalizeLocalPath(p.value("dest")) : std::string();
+
+    std::unique_ptr<ScanTree> tree = runScan(target, 0, false, g.json);
+    LocalFileSystem fs;
+    const OrganizePlan plan = Organizer(fs, rules).plan(*tree->root, dest);
+    const bool apply = p.has("apply");
+    auto relOf = [](const std::string& path, const std::string& base) {
+        return path.size() > base.size() && path.compare(0, base.size(), base) == 0 ? path.substr(base.size() + 1) : path;
+    };
+
+    if (g.json && !apply) {
+        Json moves = Json::array();
+        for (const auto& m : plan.moves)
+            moves.push_back(Json::object({{"from", m.src}, {"to", m.dst}, {"rule", m.rule}, {"size", m.size}, {"renamed", m.renamed}}));
+        Json removed = Json::array();
+        for (const auto& d : plan.removeDirs) removed.push_back(d);
+        std::cout << Json::object({{"preset", rules.name},
+                                   {"scope", plan.scope},
+                                   {"destination", plan.destination},
+                                   {"moves", std::move(moves)},
+                                   {"remove_empty_folders", std::move(removed)},
+                                   {"already_in_place", plan.alreadyInPlace},
+                                   {"unmatched", plan.unmatched},
+                                   {"conflicts_skipped", plan.conflictsSkipped},
+                                   {"protected_skipped", plan.protectedSkipped},
+                                   {"bytes", plan.bytes},
+                                   {"applied", false}})
+                         .dump(2)
+                  << "\n";
+        return 0;
+    }
+
+    if (!g.json) {
+        const size_t limit = static_cast<size_t>(std::max(0LL, p.number("top", 30)));
+        std::printf("Rules: %s\n\n", rules.name.c_str());
+        for (size_t i = 0; i < plan.moves.size() && i < limit; ++i) {
+            const auto& m = plan.moves[i];
+            std::printf("  %s\n    → %s%s\n", relOf(m.src, plan.scope).c_str(), relOf(m.dst, plan.destination).c_str(),
+                        m.renamed ? "  (renamed: name taken)" : "");
+        }
+        if (plan.moves.size() > limit) std::printf("  … and %zu more\n", plan.moves.size() - limit);
+        std::printf("\n%zu files to move (%s) · %zu folders to create · %zu emptied folders to remove\n",
+                    plan.moves.size(), humanSize(plan.bytes).c_str(), plan.createDirs.size(), plan.removeDirs.size());
+        std::printf("%zu already in place · %zu not matched by any rule · %zu skipped (name taken) · %zu inside "
+                    "apps/libraries/.git left alone\n",
+                    plan.alreadyInPlace, plan.unmatched, plan.conflictsSkipped, plan.protectedSkipped);
+    }
+    if (!apply || plan.moves.empty()) {
+        if (!g.json && !plan.moves.empty()) std::printf("Dry run. Add --apply to organize.\n");
+        return 0;
+    }
+    if (!p.has("yes") && !confirm("Move " + std::to_string(plan.moves.size()) + " files?")) {
+        std::fprintf(stderr, "Nothing changed. (Use --yes to skip this question.)\n");
+        return 1;
+    }
+    Journal journal(journalPath(g));
+    recoverJournal(journal, g.json);
+    const int64_t batch = journal.createBatch("organize", "Organize " + target + " (" + rules.name + ")", "local", plan.toOps());
+    Executor ex(fs, journal);
+    const ExecResult r = runWithProgress(ex, g.json, [&] { return ex.run(batch); });
+    if (g.json) {
+        Json out = batchJson(journal.batch(batch));
+        out["applied"] = true;
+        std::cout << out.dump(2) << "\n";
+    } else {
+        printResult("Done", r);
+        std::printf("Batch %lld — undo with `storagectl undo %lld`\n", static_cast<long long>(batch),
+                    static_cast<long long>(batch));
+    }
+    return r.failed ? 1 : 0;
+}
+
 int cmdHistory(const cli::Parsed& p, const Globals& g) {
     Journal journal(journalPath(g));
     recoverJournal(journal, g.json);
@@ -448,7 +568,8 @@ int cmdHistory(const cli::Parsed& p, const Globals& g) {
                     b.state.c_str(), b.done, b.failed + b.skipped, humanSize(b.bytes).c_str(), b.title.c_str());
     if (p.has("verbose") || list.size() == 1) {
         for (const auto& op : journal.ops(list.front().id))
-            std::printf("  %-8s %-8s %s%s%s\n", op.state.c_str(), op.action.c_str(), op.src.c_str(),
+            std::printf("  %-8s %-8s %s%s%s%s\n", op.state.c_str(), op.action.c_str(), op.src.c_str(),
+                        op.action == Action::Move ? (" → " + op.dst).c_str() : "",
                         op.detail.empty() ? "" : "  — ", op.detail.c_str());
     }
     return 0;
@@ -518,6 +639,17 @@ int main(int argc, char** argv) {
         .flag("yes", 'y', "Do not ask for confirmation")
         .flag("no-verify", 0, "Skip re-hashing right before delete/hardlink/clone");
 
+    parser.add("organize", "Reorganize a folder by rules (dry run unless --apply)")
+        .positional("path")
+        .option("preset", 'p', "NAME", "Built-in rule set (default \"By file type\"; see `presets`)")
+        .option("rules", 'r', "FILE", "Rule set from a JSON file")
+        .option("dest", 0, "DIR", "Put organized files under this folder (default: the folder itself)")
+        .option("top", 'n', "N", "Moves to print (default 30)")
+        .flag("apply", 0, "Actually move the files (journaled, undoable)")
+        .flag("yes", 'y', "Do not ask for confirmation");
+
+    parser.add("presets", "List built-in organize rule sets").option("show", 0, "NAME", "Print a preset as editable JSON");
+
     parser.add("history", "List journaled operations")
         .option("limit", 0, "N", "How many batches (default 30)")
         .flag("verbose", 'v', "Show the operations of the latest batch");
@@ -551,6 +683,8 @@ int main(int argc, char** argv) {
         if (p.command == "scans") return cmdScans(p, g);
         if (p.command == "dupes") return cmdDupes(p, g);
         if (p.command == "history") return cmdHistory(p, g);
+        if (p.command == "organize") return cmdOrganize(p, g);
+        if (p.command == "presets") return cmdPresets(p, g);
         if (p.command == "undo") return cmdUndoResume(p, g, true);
         if (p.command == "resume") return cmdUndoResume(p, g, false);
     } catch (const cli::UsageError& e) {

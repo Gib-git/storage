@@ -4,7 +4,7 @@ A small, fast, cross-platform (macOS · Linux · Windows) app that indexes your 
 shows what is using space, finds duplicates, cleans junk and reorganizes folders — **without
 ever losing a file**, even if the power goes out halfway through.
 
-> Status: **Phase 2 — Duplicates** (see [Roadmap](#roadmap)).
+> Status: **Phase 3 — Organizer** (see [Roadmap](#roadmap)).
 
 ## Features
 
@@ -16,7 +16,7 @@ ever losing a file**, even if the power goes out halfway through.
 | ✅ | `storagectl` CLI with `--json` output for scripts and AI agents | 1 |
 | ✅ | Duplicate finder (size → partial hash → full hash → optional byte compare) | 2 |
 | ✅ | Trash, hard-link or clone duplicates — journaled, undoable, crash-safe | 2 |
-| ⏳ | Rule-based organizer with dry-run preview, crash-safe journal and undo | 3 |
+| ✅ | Rule-based organizer with live preview, crash-safe journal and undo | 3 |
 | ⏳ | System & developer cache cleanup | 4 |
 | ⏳ | NAS over SSH (uses your existing `ssh` — no extra software) | 5 |
 | ⏳ | REST API, MCP server for Claude, Ollama-assisted organizing | 6 |
@@ -48,6 +48,10 @@ storagectl scans --json           # machine-readable list of saved scans
 storagectl dupes ~/Pictures --min-size 1M              # dry run: what would be removed
 storagectl dupes ~/Pictures --keep newest --apply      # move extra copies to Trash
 storagectl dupes ~/Pictures --action hardlink --apply  # keep every path, store data once
+storagectl presets                                     # built-in organize rules
+storagectl organize ~/Downloads --preset tidy          # preview tidying Downloads
+storagectl organize ~/Pictures --preset photos --apply # Photos/2024/2024-07/...
+storagectl organize ~/Inbox --rules my-rules.json --dest ~/Archive --apply
 storagectl history                                     # everything Storage changed
 storagectl undo 3                                      # put batch 3 back
 ```
@@ -78,6 +82,7 @@ cmake --preset release && cmake --build --preset release && ctest --preset relea
 6. **v0.6 Automation & AI** — REST API, MCP server, Ollama suggestions
 7. **v1.0 Polish** — settings, scheduled scans, file watching, installers
 
+Writing your own organize rules: [docs/RULES.md](docs/RULES.md).
 See [docs/SUGGESTIONS.md](docs/SUGGESTIONS.md) for ideas beyond the roadmap.
 
 ## License

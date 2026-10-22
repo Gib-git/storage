@@ -54,6 +54,7 @@ public:
 private:
     enum class Outcome { Done, Failed, Skipped };
     Outcome perform(JournalOp& op, std::string& detail, std::string* newDst);
+    Outcome performRemoveDir(const JournalOp& op, std::string& detail);
     Outcome performMove(JournalOp& op, const std::string& from, const std::string& to, std::string& detail);
     Outcome reverse(JournalOp& op, std::string& detail);
     void hook(const JournalOp& op, const char* point) const;
