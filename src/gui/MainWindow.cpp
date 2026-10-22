@@ -34,12 +34,15 @@
 
 #include "BreadcrumbBar.h"
 #include "CategoryBar.h"
+#include "DuplicatesView.h"
+#include "HistoryView.h"
 #include "ScanController.h"
 #include "ScanModel.h"
 #include "ShareDelegate.h"
 #include "Sidebar.h"
 #include "Theme.h"
 #include "TreemapWidget.h"
+#include "storage/core/executor.hpp"
 #include "storage/core/format.hpp"
 #include "storage/core/index.hpp"
 #include "storage/core/paths.hpp"
@@ -67,6 +70,41 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     QSettings settings;
     if (!restoreGeometry(settings.value("window/geometry").toByteArray())) resize(1280, 820);
+    updateActions();
+    QMetaObject::invokeMethod(this, &MainWindow::recoverInterruptedWork, Qt::QueuedConnection);
+}
+
+void MainWindow::recoverInterruptedWork() {
+    // Anything a crash or power cut left half-done is checked against the disk now.
+    std::vector<int64_t> recovered;
+    try {
+        static LocalFileSystem fs;
+        Journal journal(Journal::defaultPath());
+        recovered = Executor::recover(fs, journal);
+    } catch (const std::exception& e) {
+        statusLabel_->setText(tr("Could not open the operation journal: %1").arg(qs(e.what())));
+        return;
+    }
+    if (recovered.empty()) return;
+    history_->reload();
+    const auto answer = QMessageBox::question(
+        this, tr("Interrupted Work"),
+        tr("Storage was closed while changing files (%n batch(es)). Every file has been checked and nothing was lost.\n\n"
+           "Open History to review and finish the remaining steps?",
+           nullptr, static_cast<int>(recovered.size())));
+    if (answer == QMessageBox::Yes) setMode(HistoryMode);
+}
+
+void MainWindow::findDuplicatesNow() {
+    setMode(DuplicatesMode);
+    dupes_->startSearch();
+}
+
+void MainWindow::setMode(Mode m) {
+    modes_->setCurrentIndex(m);
+    for (int i = 0; i < 3; ++i) modeActions_[i]->setChecked(i == m);
+    if (m == DuplicatesMode) dupes_->setScope(tree_, current_);
+    if (m == HistoryMode) history_->reload();
     updateActions();
 }
 
@@ -130,6 +168,11 @@ void MainWindow::buildActions() {
     go->addAction(actUp_);
 
     QMenu* view = menuBar()->addMenu(tr("&View"));
+    // Mode actions are created with the toolbar; add them to the menu once they exist.
+    QMetaObject::invokeMethod(this, [this, view] {
+        view->insertActions(view->actions().value(0), {modeActions_[0], modeActions_[1], modeActions_[2]});
+        view->insertSeparator(view->actions().value(3));
+    }, Qt::QueuedConnection);
     QMenu* appearance = view->addMenu(tr("Appearance"));
     auto* group = new QActionGroup(this);
     const theme::Mode currentMode = theme::current();
@@ -150,11 +193,34 @@ void MainWindow::buildActions() {
 }
 
 void MainWindow::buildUi() {
+    statusLabel_ = new QLabel(this);
+    statusBar()->addWidget(statusLabel_, 1);
+    statusBar()->setSizeGripEnabled(false);
+
     QToolBar* tb = addToolBar(tr("Main"));
     tb->setObjectName("MainToolbar");
     tb->setMovable(false);
     tb->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     tb->setIconSize(QSize(16, 16));
+
+    auto* modeGroup = new QActionGroup(this);
+    const QString modeNames[] = {tr("Disk Usage"), tr("Duplicates"), tr("History")};
+    const QKeySequence modeKeys[] = {QKeySequence(Qt::CTRL | Qt::Key_1), QKeySequence(Qt::CTRL | Qt::Key_2),
+                                     QKeySequence(Qt::CTRL | Qt::Key_3)};
+    for (int i = 0; i < 3; ++i) {
+        modeActions_[i] = new QAction(modeNames[i], this);
+        modeActions_[i]->setCheckable(true);
+        modeActions_[i]->setShortcut(modeKeys[i]);
+        modeGroup->addAction(modeActions_[i]);
+        connect(modeActions_[i], &QAction::triggered, this, [this, i] { setMode(static_cast<Mode>(i)); });
+        tb->addAction(modeActions_[i]);
+        if (auto* w = qobject_cast<QToolButton*>(tb->widgetForAction(modeActions_[i]))) {
+            w->setObjectName("ModeButton");
+            w->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        }
+    }
+    modeActions_[0]->setChecked(true);
+    tb->addSeparator();
     tb->addAction(actBack_);
     tb->addAction(actForward_);
     tb->addAction(actUp_);
@@ -168,9 +234,16 @@ void MainWindow::buildUi() {
         if (auto* w = tb->widgetForAction(a)) static_cast<QToolButton*>(w)->setToolButtonStyle(Qt::ToolButtonIconOnly);
 
     sidebar_ = new Sidebar(this);
-    connect(sidebar_, &Sidebar::scanRequested, this, &MainWindow::startScan);
+    connect(sidebar_, &Sidebar::scanRequested, this, [this](const QString& path) {
+        if (modes_->currentIndex() == HistoryMode) setMode(UsageMode);
+        returnToDuplicates_ = modes_->currentIndex() == DuplicatesMode;
+        startScan(path);
+    });
     connect(sidebar_, &Sidebar::loadRequested, this, [this](qint64 id) {
-        if (!scanner_->busy()) scanner_->load(id);
+        if (scanner_->busy() || dupes_->busy()) return;
+        if (modes_->currentIndex() == HistoryMode) setMode(UsageMode);
+        returnToDuplicates_ = modes_->currentIndex() == DuplicatesMode;
+        scanner_->load(id);
     });
     connect(sidebar_, &Sidebar::removeRequested, this, [this](qint64 id) {
         try {
@@ -186,18 +259,35 @@ void MainWindow::buildUi() {
     stack_->addWidget(buildProgressPage());
     stack_->addWidget(buildBrowserPage());
 
+    dupes_ = new DuplicatesView(this);
+    connect(dupes_, &DuplicatesView::message, statusLabel_, &QLabel::setText);
+    connect(dupes_, &DuplicatesView::searchFinished, this, &MainWindow::duplicatesFound);
+    connect(dupes_, &DuplicatesView::filesChanged, this, [this] {
+        actRescan_->setText(tr("Rescan (sizes changed)"));
+    });
+    connect(dupes_, &DuplicatesView::chooseFolderRequested, this, [this] {
+        returnToDuplicates_ = true;
+        chooseFolder();
+    });
+
+    history_ = new HistoryView(this);
+    connect(history_, &HistoryView::message, statusLabel_, &QLabel::setText);
+    connect(history_, &HistoryView::filesChanged, this, [this] { actRescan_->setText(tr("Rescan (sizes changed)")); });
+
+    modes_ = new QStackedWidget(this);
+    modes_->addWidget(stack_);
+    modes_->addWidget(dupes_);
+    modes_->addWidget(history_);
+
     auto* split = new QSplitter(Qt::Horizontal, this);
     split->setObjectName("MainSplitter");
     split->setHandleWidth(1);
     split->addWidget(sidebar_);
-    split->addWidget(stack_);
+    split->addWidget(modes_);
     split->setStretchFactor(1, 1);
     split->setSizes({230, 1050});
     setCentralWidget(split);
 
-    statusLabel_ = new QLabel(this);
-    statusBar()->addWidget(statusLabel_, 1);
-    statusBar()->setSizeGripEnabled(false);
 }
 
 QWidget* MainWindow::buildWelcomePage() {
@@ -394,6 +484,8 @@ void MainWindow::onScanStarted(const QString& what) {
     progressPath_->clear();
     progressCancel_->setVisible(!pendingScanRoot_.isEmpty());
     stack_->setCurrentIndex(ProgressPage);
+    modes_->setCurrentIndex(UsageMode);
+    for (int i = 0; i < 3; ++i) modeActions_[i]->setChecked(i == UsageMode);
     updateActions();
 }
 
@@ -408,6 +500,10 @@ void MainWindow::onScanFinished(std::shared_ptr<ScanTree> tree, const QString& e
     pendingScanRoot_.clear();
     if (!tree || !tree->root) {
         stack_->setCurrentIndex(tree_ ? BrowserPage : WelcomePage);
+        if (returnToDuplicates_) {
+            returnToDuplicates_ = false;
+            setMode(DuplicatesMode);
+        }
         if (!error.isEmpty()) statusLabel_->setText(error);
         updateActions();
         emit scanFinished(false);
@@ -433,6 +529,11 @@ void MainWindow::onScanFinished(std::shared_ptr<ScanTree> tree, const QString& e
     if (r.errors) msg += tr(" · %1 folders could not be read").arg(qs(withThousands(r.errors)));
     statusLabel_->setText(msg);
     if (!error.isEmpty()) statusLabel_->setText(tr("The scan finished but could not be saved: %1").arg(error));
+    actRescan_->setText(tr("Rescan"));
+    if (returnToDuplicates_) {
+        returnToDuplicates_ = false;
+        setMode(DuplicatesMode);
+    }
     updateActions();
     emit scanFinished(true);
 }
@@ -455,6 +556,7 @@ void MainWindow::navigate(Node* node, bool record) {
     treemap_->setRoot(node);
     categories_->setNode(node);
     crumbs_->setNode(node);
+    dupes_->setScope(tree_, node);
     updateSummary();
     updateActions();
 }
@@ -534,6 +636,10 @@ void MainWindow::showContextMenu(Node* node, const QPoint& globalPos) {
     menu.addAction(tr("Copy Path"), this, [path] { QApplication::clipboard()->setText(path); });
     if (node->isDir()) {
         menu.addSeparator();
+        menu.addAction(tr("Find Duplicates Here"), this, [this, node] {
+            setMode(DuplicatesMode);
+            dupes_->setScope(tree_, node);
+        });
         menu.addAction(tr("Scan This Folder Separately"), this, [this, path] { startScan(path); });
     }
     menu.exec(globalPos);
@@ -580,6 +686,16 @@ void MainWindow::changeEvent(QEvent* e) {
 }
 
 void MainWindow::closeEvent(QCloseEvent* e) {
+    if (dupes_->busy() || history_->busy()) {
+        const auto answer = QMessageBox::question(
+            this, kAppName,
+            tr("Storage is still working. Quit anyway?\n\nIt is safe: the current file finishes and the rest can be "
+               "resumed from History next time."));
+        if (answer != QMessageBox::Yes) {
+            e->ignore();
+            return;
+        }
+    }
     scanner_->cancel();
     QSettings().setValue("window/geometry", saveGeometry());
     QMainWindow::closeEvent(e);

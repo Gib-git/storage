@@ -2,6 +2,35 @@
 
 All notable changes are listed here. Each phase of the roadmap ships as a release.
 
+## [0.2.0] — Phase 2: Duplicates
+
+### Added
+- **Duplicates view** in the desktop app (Ctrl/⌘+2)
+  - Searches the folder you are browsing; size filter, skip hidden files, optional byte-by-byte check
+  - Groups sorted by reclaimable space; folders shown relative to the search root
+  - Keep rules: oldest, newest, shortest path, longest path, alphabetical; "keep only this copy"
+  - Actions: **Move to Trash** (default), replace with **hard links**, replace with **space-sharing
+    clones** (APFS / Btrfs / XFS), or **delete permanently**
+  - It is impossible to select every copy of a file
+- **History view** (Ctrl/⌘+3): every batch of changes with per-file results, **Undo** and **Resume**
+- On startup, work interrupted by a crash or power cut is checked and can be resumed
+- **CLI**: `storagectl dupes` (dry run unless `--apply`), `history`, `undo`, `resume`
+- `Storage <path> --find-duplicates` opens a folder straight into a duplicate search
+
+### Safety
+- Write-ahead **operation journal** (SQLite, `synchronous=FULL`): each operation is recorded before it
+  touches the disk
+- Before acting, every file is re-checked against what the plan saw (size + modified time); before
+  delete / hardlink / clone, both the file and the kept copy are **re-hashed**
+- Replacements are atomic (temp file + rename); temp files are cleaned up by recovery
+- Moves (used by the organizer next) never overwrite; cross-drive moves copy → verify → publish → remove
+- Crash tests kill the process at every step of an operation and prove no file is lost or duplicated
+
+### Performance
+- SHA-256 uses ARMv8 crypto instructions or Intel SHA-NI when available (~4× faster)
+- Hashes are cached in the index by path + size + modified time, so repeat searches are near-instant
+- Partial hash (first + last 64 KB) rules out most look-alikes before reading whole files
+
 ## [0.1.0] — Phase 1: Foundation & Disk Usage
 
 ### Added

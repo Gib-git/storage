@@ -9,6 +9,8 @@
 #include "storage/core/scanner.hpp"
 
 class BreadcrumbBar;
+class DuplicatesView;
+class HistoryView;
 class CategoryBar;
 class QAction;
 class QLabel;
@@ -29,9 +31,12 @@ public:
 
     // Scan a path (or open its saved scan) — used for command-line arguments.
     void openPath(const QString& path, bool forceRescan);
+    // Switch to the Duplicates view for the current folder and start searching.
+    void findDuplicatesNow();
 
 signals:
     void scanFinished(bool ok);
+    void duplicatesFound(int groups);
 
 protected:
     void closeEvent(QCloseEvent* e) override;
@@ -66,6 +71,10 @@ private:
     void setThemeMode(int mode);
     void showAbout();
 
+    enum Mode { UsageMode = 0, DuplicatesMode = 1, HistoryMode = 2 };
+    void setMode(Mode m);
+    void recoverInterruptedWork();
+
     ScanController* scanner_ = nullptr;
     std::shared_ptr<storage::ScanTree> tree_;
     storage::Node* current_ = nullptr;
@@ -73,7 +82,12 @@ private:
     QString pendingScanRoot_;
 
     Sidebar* sidebar_ = nullptr;
-    QStackedWidget* stack_ = nullptr;
+    QStackedWidget* modes_ = nullptr;   // Usage / Duplicates / History
+    QStackedWidget* stack_ = nullptr;   // Usage: welcome / progress / browser
+    DuplicatesView* dupes_ = nullptr;
+    HistoryView* history_ = nullptr;
+    QAction* modeActions_[3] = {};
+    bool returnToDuplicates_ = false;
     BreadcrumbBar* crumbs_ = nullptr;
     QLabel* summary_ = nullptr;
     QTreeView* view_ = nullptr;

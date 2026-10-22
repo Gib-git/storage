@@ -81,6 +81,8 @@ QString styleSheet(bool dark) {
         QToolBar { border: none; spacing: 4px; padding: 4px 8px; }
         QToolBar QToolButton { padding: 4px 8px; border-radius: 6px; }
         QToolBar QToolButton:hover { background: %3; }
+        QToolBar QToolButton#ModeButton { padding: 4px 12px; font-weight: 500; }
+        QToolBar QToolButton#ModeButton:checked { background: %4; color: white; }
         QStatusBar { border-top: 1px solid %2; }
         #Sidebar { background: %1; border: none; border-right: 1px solid %2; }
         #Sidebar::item { padding: 2px 4px; border-radius: 6px; }
@@ -96,7 +98,7 @@ QString styleSheet(bool dark) {
         #BigButton { padding: 12px 18px; border-radius: 10px; border: 1px solid %2; text-align: left; }
         #BigButton:hover { background: %3; }
     )")
-        .arg(sidebar, border, hover);
+        .arg(sidebar, border, hover, accent().name());
 }
 
 }  // namespace

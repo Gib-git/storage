@@ -4,7 +4,11 @@ qt_standard_project_setup()
 qt_add_executable(Storage WIN32 MACOSX_BUNDLE
     main.cpp
     BreadcrumbBar.cpp BreadcrumbBar.h
+    BackgroundTask.h
     CategoryBar.cpp CategoryBar.h
+    DuplicatesModel.cpp DuplicatesModel.h
+    DuplicatesView.cpp DuplicatesView.h
+    HistoryView.cpp HistoryView.h
     MainWindow.cpp MainWindow.h
     ScanController.cpp ScanController.h
     ScanModel.cpp ScanModel.h

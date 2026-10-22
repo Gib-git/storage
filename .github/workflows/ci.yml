@@ -42,6 +42,12 @@ jobs:
       - name: Unit tests
         run: ctest --preset release
 
+      - name: Hash implementation in use
+        shell: bash
+        run: |
+          t=$(find build/release -type f \( -name storage_tests -o -name storage_tests.exe \) | head -1)
+          "$t" sha256
+
       - name: CLI smoke test
         shell: bash
         run: |

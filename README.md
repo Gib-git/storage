@@ -4,7 +4,7 @@ A small, fast, cross-platform (macOS · Linux · Windows) app that indexes your 
 shows what is using space, finds duplicates, cleans junk and reorganizes folders — **without
 ever losing a file**, even if the power goes out halfway through.
 
-> Status: **Phase 1 — Foundation & Disk Usage** (see [Roadmap](#roadmap)).
+> Status: **Phase 2 — Duplicates** (see [Roadmap](#roadmap)).
 
 ## Features
 
@@ -14,7 +14,8 @@ ever losing a file**, even if the power goes out halfway through.
 | ✅ | Persistent SQLite index — browse previous scans instantly | 1 |
 | ✅ | Folder size browser: sortable tree, breadcrumbs, treemap | 1 |
 | ✅ | `storagectl` CLI with `--json` output for scripts and AI agents | 1 |
-| ⏳ | Duplicate finder (size → partial hash → full hash → optional byte compare) | 2 |
+| ✅ | Duplicate finder (size → partial hash → full hash → optional byte compare) | 2 |
+| ✅ | Trash, hard-link or clone duplicates — journaled, undoable, crash-safe | 2 |
 | ⏳ | Rule-based organizer with dry-run preview, crash-safe journal and undo | 3 |
 | ⏳ | System & developer cache cleanup | 4 |
 | ⏳ | NAS over SSH (uses your existing `ssh` — no extra software) | 5 |
@@ -43,7 +44,19 @@ storagectl scan ~                 # scan and save to the index
 storagectl du ~ -d 2 -n 10        # largest folders, two levels deep
 storagectl du -i ~/Projects       # answer from the saved index, no rescan
 storagectl scans --json           # machine-readable list of saved scans
+
+storagectl dupes ~/Pictures --min-size 1M              # dry run: what would be removed
+storagectl dupes ~/Pictures --keep newest --apply      # move extra copies to Trash
+storagectl dupes ~/Pictures --action hardlink --apply  # keep every path, store data once
+storagectl history                                     # everything Storage changed
+storagectl undo 3                                      # put batch 3 back
 ```
+
+## How your files are kept safe
+
+Every change goes through a write-ahead journal and is re-verified right before it happens. A
+crash at any moment leaves each file in at least one verified location, and the app finishes or
+rolls back the interrupted step on next launch. Details: [docs/SAFETY.md](docs/SAFETY.md).
 
 ## Build from source
 
