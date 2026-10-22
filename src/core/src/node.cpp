@@ -56,6 +56,7 @@ void ScanTree::finalize() {
             if (a->size != b->size) return a->size > b->size;
             return a->name < b->name;
         });
+        for (size_t i = 0; i < node->children.size(); ++i) node->children[i]->row = static_cast<uint32_t>(i);
     }
 }
 

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Storage
+GenericName=Disk Usage Analyzer
+Comment=Index, deduplicate, organize and clean your disks and NAS
+Exec=Storage %f
+Icon=storage
+Terminal=false
+Categories=Utility;System;FileTools;
+Keywords=disk;space;duplicates;cleanup;organize;treemap;

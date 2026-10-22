@@ -1,0 +1,113 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    name: Package ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Linux,   os: ubuntu-22.04 }
+          - { name: macOS,   os: macos-14 }
+          - { name: Windows, os: windows-2022 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux build packages
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libgl1-mesa-dev libxkbcommon-dev libxkbcommon-x11-0 libxcb-cursor0 libegl1 libfuse2
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          cache: true
+
+      - name: Build
+        run: |
+          cmake --preset release
+          cmake --build --preset release --parallel
+          ctest --preset release
+
+      - name: Version
+        id: v
+        shell: bash
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p dist
+          app=build/release/src/gui/Storage.app
+          cp build/release/src/cli/storagectl "$app/Contents/MacOS/"
+          macdeployqt "$app" -always-overwrite
+          codesign --force --deep --sign - "$app"
+          hdiutil create -volname Storage -srcfolder "$app" -ov -format UDZO "dist/Storage-${{ steps.v.outputs.version }}-macOS-arm64.dmg"
+          tar -C build/release/src/cli -czf "dist/storagectl-${{ steps.v.outputs.version }}-macOS-arm64.tar.gz" storagectl
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir -p dist stage/Storage
+          cp build/release/src/gui/Release/Storage.exe stage/Storage/
+          cp build/release/src/cli/Release/storagectl.exe stage/Storage/
+          windeployqt --release --no-translations --no-system-d3d-compiler --no-opengl-sw stage/Storage/Storage.exe
+          cp LICENSE README.md stage/Storage/
+          (cd stage && 7z a -tzip "../dist/Storage-${{ steps.v.outputs.version }}-Windows-x64.zip" Storage >/dev/null)
+          (cd build/release/src/cli/Release && 7z a -tzip "$GITHUB_WORKSPACE/dist/storagectl-${{ steps.v.outputs.version }}-Windows-x64.zip" storagectl.exe >/dev/null)
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+          NO_STRIP: '1'
+        run: |
+          mkdir -p dist AppDir/usr/bin
+          cp build/release/src/gui/Storage build/release/src/cli/storagectl AppDir/usr/bin/
+          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          wget -q https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          chmod +x linuxdeploy*.AppImage
+          export QMAKE="$QT_ROOT_DIR/bin/qmake"
+          export LDAI_OUTPUT="dist/Storage-${{ steps.v.outputs.version }}-Linux-x86_64.AppImage"
+          ./linuxdeploy-x86_64.AppImage --appdir AppDir \
+            --executable AppDir/usr/bin/Storage \
+            --desktop-file resources/storage.desktop \
+            --icon-file resources/icons/storage.png \
+            --plugin qt --output appimage
+          tar -C build/release/src/cli -czf "dist/storagectl-${{ steps.v.outputs.version }}-Linux-x86_64.tar.gz" storagectl
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.name }}
+          path: dist/*
+
+  release:
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Release notes from CHANGELOG
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          awk -v v="$v" '/^## /{p = index($0, "[" v "]") > 0; next} p' CHANGELOG.md > notes.md
+          test -s notes.md || echo "Release $GITHUB_REF_NAME" > notes.md
+          cat notes.md
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: Storage ${{ github.ref_name }}
+          body_path: notes.md
+          files: dist/*
+          fail_on_unmatched_files: true

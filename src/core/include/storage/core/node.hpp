@@ -30,6 +30,7 @@ struct Node {
     uint64_t dev = 0;
     uint64_t ino = 0;
     uint32_t nlink = 1;
+    uint32_t row = 0;        // position within parent->children (set by finalize)
     NodeKind kind = NodeKind::File;
     uint8_t flags = 0;
 

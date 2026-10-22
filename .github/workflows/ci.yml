@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Linux,   os: ubuntu-22.04 }
+          - { name: macOS,   os: macos-14 }
+          - { name: Windows, os: windows-2022 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux build packages
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libgl1-mesa-dev libxkbcommon-dev libxkbcommon-x11-0 libxcb-cursor0 libegl1
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          cache: true
+
+      - name: Configure
+        run: cmake --preset release
+
+      - name: Build
+        run: cmake --build --preset release --parallel
+
+      - name: Unit tests
+        run: ctest --preset release
+
+      - name: CLI smoke test
+        shell: bash
+        run: |
+          cli=$(find build/release -type f \( -name storagectl -o -name storagectl.exe \) | head -1)
+          "$cli" --version
+          "$cli" --db "$RUNNER_TEMP/ci.db" scan .
+          "$cli" --db "$RUNNER_TEMP/ci.db" --json du -i . -n 3
+
+      - name: GUI smoke test (offscreen)
+        shell: bash
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          gui=$(find build/release -type f \( -path '*Storage.app/Contents/MacOS/Storage' -o -name Storage.exe -o -path '*/src/gui/Storage' \) | head -1)
+          echo "GUI binary: $gui"
+          "$gui" . --rescan --screenshot "$RUNNER_TEMP/smoke.png"
+          test -s "$RUNNER_TEMP/smoke.png"
+
+      - name: Upload screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshot-${{ matrix.name }}
+          path: ${{ runner.temp }}/smoke.png
+          if-no-files-found: ignore
