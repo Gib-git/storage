@@ -1,5 +1,6 @@
 add_executable(storage_tests
     main.cpp
+    test_cleaner.cpp
     test_duplicates.cpp
     test_executor.cpp
     test_format.cpp

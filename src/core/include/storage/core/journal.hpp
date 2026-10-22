@@ -32,6 +32,7 @@ inline constexpr const char* Hardlink = "hardlink";
 inline constexpr const char* Clone = "clone";
 inline constexpr const char* Move = "move";
 inline constexpr const char* RemoveDir = "rmdir";  // only if empty apart from OS junk files
+inline constexpr const char* DeleteTree = "rmtree";  // permanently delete a folder and everything in it
 inline constexpr const char* MakeDir = "mkdir";    // skipped if it already exists, so undo never removes it
 }  // namespace Action
 

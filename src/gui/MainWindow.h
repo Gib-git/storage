@@ -9,6 +9,7 @@
 #include "storage/core/scanner.hpp"
 
 class BreadcrumbBar;
+class CleanupView;
 class DuplicatesView;
 class HistoryView;
 class OrganizeView;
@@ -36,11 +37,14 @@ public:
     void findDuplicatesNow();
     // Switch to the Organize view for the current folder and preview the selected rules.
     void previewOrganizeNow();
+    // Switch to Clean Up and measure the system locations.
+    void showCleanupNow();
 
 signals:
     void scanFinished(bool ok);
     void duplicatesFound(int groups);
     void organizePreviewReady(int moves);
+    void cleanupAnalyzed();
 
 protected:
     void closeEvent(QCloseEvent* e) override;
@@ -75,7 +79,7 @@ private:
     void setThemeMode(int mode);
     void showAbout();
 
-    enum Mode { UsageMode = 0, DuplicatesMode = 1, OrganizeMode = 2, HistoryMode = 3, ModeCount = 4 };
+    enum Mode { UsageMode = 0, DuplicatesMode = 1, OrganizeMode = 2, CleanupMode = 3, HistoryMode = 4, ModeCount = 5 };
     void setMode(Mode m);
     void recoverInterruptedWork();
 
@@ -90,6 +94,7 @@ private:
     QStackedWidget* stack_ = nullptr;   // Usage: welcome / progress / browser
     DuplicatesView* dupes_ = nullptr;
     OrganizeView* organize_ = nullptr;
+    CleanupView* cleanup_ = nullptr;
     HistoryView* history_ = nullptr;
     QAction* modeActions_[ModeCount] = {};
     int returnToMode_ = -1;  // mode to go back to after a scan started from another view

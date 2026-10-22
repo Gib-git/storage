@@ -135,11 +135,12 @@ Executor::Outcome Executor::perform(JournalOp& op, std::string& detail, std::str
         detail = "no longer exists";
         return Outcome::Skipped;
     }
-    if (src.kind != NodeKind::File) {
+    const bool folderAction = op.action == Action::DeleteTree || (op.action == Action::Trash && op.ref.empty());
+    if (src.kind != NodeKind::File && !(folderAction && (src.kind == NodeKind::Directory || src.kind == NodeKind::Symlink))) {
         detail = "is not a regular file";
         return Outcome::Skipped;
     }
-    if ((op.size || op.mtime) && (src.size != op.size || src.mtime != op.mtime)) {
+    if (src.kind == NodeKind::File && (op.size || op.mtime) && (src.size != op.size || src.mtime != op.mtime)) {
         detail = "changed since it was checked";
         return Outcome::Skipped;
     }
@@ -189,6 +190,9 @@ Executor::Outcome Executor::perform(JournalOp& op, std::string& detail, std::str
         }
     } else if (op.action == Action::Delete) {
         ec = fs_.removeFile(op.src);
+        if (!ec) detail = "deleted";
+    } else if (op.action == Action::DeleteTree) {
+        ec = src.kind == NodeKind::Directory ? fs_.removeTree(op.src) : fs_.removeFile(op.src);
         if (!ec) detail = "deleted";
     } else if (op.action == Action::Hardlink) {
         ec = fs_.replaceWithHardlink(op.src, op.ref);
@@ -327,7 +331,7 @@ Executor::Outcome Executor::reverse(JournalOp& op, std::string& detail) {
         }
         ec = fs_.restore(op.dst, op.src);
         if (!ec) detail = "restored from Trash";
-    } else if (op.action == Action::Delete) {
+    } else if (op.action == Action::Delete || op.action == Action::DeleteTree) {
         detail = "permanently deleted files cannot be restored";
         return Outcome::Skipped;
     } else if (op.action == Action::RemoveDir) {
@@ -397,7 +401,8 @@ std::vector<int64_t> Executor::recover(FileSystem& fs, Journal& journal) {
                 // Unknown whether we created it: retry, which marks it skipped if it exists,
                 // so undo can never remove a folder that was there before.
                 journal.setOp(op.id, OpState::Pending, "interrupted; will retry");
-            } else if (op.action == Action::Trash || op.action == Action::Delete || op.action == Action::RemoveDir) {
+            } else if (op.action == Action::Trash || op.action == Action::Delete || op.action == Action::DeleteTree ||
+                       op.action == Action::RemoveDir) {
                 journal.setOp(op.id, srcThere ? OpState::Pending : OpState::Done,
                               srcThere ? "interrupted; will retry" : "completed before interruption");
             } else {

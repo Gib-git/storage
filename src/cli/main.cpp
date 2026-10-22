@@ -18,6 +18,7 @@
 #define STORAGE_ISATTY(f) isatty(fileno(f))
 #endif
 
+#include "storage/core/cleaner.hpp"
 #include "storage/core/duplicates.hpp"
 #include "storage/core/executor.hpp"
 #include "storage/core/format.hpp"
@@ -548,6 +549,105 @@ int cmdOrganize(const cli::Parsed& p, const Globals& g) {
     return r.failed ? 1 : 0;
 }
 
+
+int cmdClean(const cli::Parsed& p, const Globals& g) {
+    std::vector<CleanTarget> targets;
+    const auto only = splitList(p.value("only"));
+    for (const auto& t : cleanCatalogue()) {
+        const bool chosen = only.empty() ? (p.has("all") || t.defaultOn) : std::find(only.begin(), only.end(), t.id) != only.end();
+        if (chosen) targets.push_back(t);
+    }
+    if (targets.empty()) throw cli::UsageError("no matching cleanup targets (see `storagectl clean --all`)");
+
+    LocalFileSystem fs;
+    if (!g.json && STORAGE_ISATTY(stderr)) std::fprintf(stderr, "Measuring %zu locations…\n", targets.size());
+    const auto items = analyzeCleanTargets(fs, targets);
+    const bool permanent = !p.has("trash");
+    uint64_t total = 0;
+    for (const auto& i : items) total += i.bytes;
+
+    if (g.json && !p.has("apply")) {
+        Json arr = Json::array();
+        for (const auto& i : items)
+            arr.push_back(Json::object({{"id", i.target.id},
+                                        {"group", i.target.group},
+                                        {"name", i.target.name},
+                                        {"safety", safetyName(i.target.safety)},
+                                        {"bytes", i.bytes},
+                                        {"files", i.files},
+                                        {"entries", static_cast<uint64_t>(i.entries.size())},
+                                        {"default", i.target.defaultOn}}));
+        Json cmds = Json::array();
+        for (const auto& c : cleanCommands())
+            cmds.push_back(Json::object({{"name", c.name}, {"command", c.command}, {"description", c.description}}));
+        std::cout << Json::object({{"targets", std::move(arr)}, {"bytes", total}, {"commands", std::move(cmds)}, {"applied", false}})
+                         .dump(2)
+                  << "\n";
+        return 0;
+    }
+    if (!g.json) {
+        std::printf("%-22s %-10s %-8s %10s  %s\n", "ID", "GROUP", "SAFETY", "SIZE", "WHAT");
+        for (const auto& i : items)
+            std::printf("%-22s %-10s %-8s %10s  %s%s\n", i.target.id.c_str(), i.target.group.c_str(),
+                        safetyName(i.target.safety), humanSize(i.bytes).c_str(), i.target.name.c_str(),
+                        i.target.hint.empty() ? "" : ("  — " + i.target.hint).c_str());
+        std::printf("\nTotal: %s. Safe caches are deleted permanently (use --trash to move them to the Trash instead);\n"
+                    "everything else goes to the Trash.\n",
+                    humanSize(total).c_str());
+        std::printf("\nYou can also run these yourself:\n");
+        for (const auto& c : cleanCommands()) std::printf("  %-40s  # %s\n", c.command.c_str(), c.description.c_str());
+    }
+    if (!p.has("apply") || total == 0) {
+        if (!g.json && total) std::printf("\nDry run. Add --apply to clean the listed locations.\n");
+        return 0;
+    }
+    if (!p.has("yes") && !confirm("Clean up " + humanSize(total) + "?")) return 1;
+    Journal journal(journalPath(g));
+    recoverJournal(journal, g.json);
+    const int64_t batch = journal.createBatch("clean", "Clean up " + humanSize(total), "local", planClean(items, permanent));
+    Executor ex(fs, journal);
+    const ExecResult r = runWithProgress(ex, g.json, [&] { return ex.run(batch); });
+    if (g.json) std::cout << batchJson(journal.batch(batch)).dump(2) << "\n";
+    else printResult("Cleaned", r);
+    return r.failed ? 1 : 0;
+}
+
+int cmdInsights(const cli::Parsed& p, const Globals& g) {
+    const std::string target = normalizeLocalPath(p.positional[0]);
+    const int days = static_cast<int>(p.number("older", 365));
+    const uint64_t minSize = parseSize(p.value("min-size", "100M"));
+    auto tree = runScan(target, 0, false, g.json);
+    const char sep = nativeSeparator();
+    const auto large = findLargeOldFiles(*tree->root, sep, minSize, days, 50);
+    const auto junk = findProjectJunk(*tree->root, sep, std::min(days, 180));
+    const auto empty = findEmptyFolders(*tree->root, sep);
+    auto list = [](const std::vector<Finding>& v) {
+        Json a = Json::array();
+        for (const auto& f : v)
+            a.push_back(Json::object({{"path", f.path}, {"size", f.size}, {"mtime", f.mtime}, {"reason", f.reason}}));
+        return a;
+    };
+    if (g.json) {
+        std::cout << Json::object({{"large_old_files", list(large)}, {"project_junk", list(junk)}, {"empty_folders", list(empty)}})
+                         .dump(2)
+                  << "\n";
+        return 0;
+    }
+    auto section = [](const char* title, const std::vector<Finding>& v, bool sized) {
+        uint64_t total = 0;
+        for (const auto& f : v) total += f.size;
+        std::printf("\n%s (%zu%s)\n", title, v.size(), sized ? (", " + humanSize(total)).c_str() : "");
+        for (size_t i = 0; i < v.size() && i < 15; ++i)
+            std::printf("  %10s  %s  %s\n", sized ? humanSize(v[i].size).c_str() : "", formatTime(v[i].mtime).substr(0, 10).c_str(),
+                        v[i].path.c_str());
+        if (v.size() > 15) std::printf("  … and %zu more\n", v.size() - 15);
+    };
+    section("Large files not modified in a while", large, true);
+    section("Rebuildable project folders in idle projects", junk, true);
+    section("Empty folders", empty, false);
+    return 0;
+}
+
 int cmdHistory(const cli::Parsed& p, const Globals& g) {
     Journal journal(journalPath(g));
     recoverJournal(journal, g.json);
@@ -650,6 +750,18 @@ int main(int argc, char** argv) {
 
     parser.add("presets", "List built-in organize rule sets").option("show", 0, "NAME", "Print a preset as editable JSON");
 
+    parser.add("clean", "Free space from caches, logs and other junk (dry run unless --apply)")
+        .option("only", 0, "IDS", "Comma-separated target ids (see the ID column)")
+        .flag("all", 0, "Include targets that are off by default (Trash, backups, old downloads, ...)")
+        .flag("trash", 0, "Move caches to the Trash instead of deleting them permanently")
+        .flag("apply", 0, "Actually clean (journaled)")
+        .flag("yes", 'y', "Do not ask for confirmation");
+
+    parser.add("insights", "Large old files, idle project junk and empty folders under a path")
+        .positional("path")
+        .option("older", 0, "DAYS", "Not modified for this many days (default 365)")
+        .option("min-size", 0, "SIZE", "Minimum size for large files (default 100M)");
+
     parser.add("history", "List journaled operations")
         .option("limit", 0, "N", "How many batches (default 30)")
         .flag("verbose", 'v', "Show the operations of the latest batch");
@@ -685,6 +797,8 @@ int main(int argc, char** argv) {
         if (p.command == "history") return cmdHistory(p, g);
         if (p.command == "organize") return cmdOrganize(p, g);
         if (p.command == "presets") return cmdPresets(p, g);
+        if (p.command == "clean") return cmdClean(p, g);
+        if (p.command == "insights") return cmdInsights(p, g);
         if (p.command == "undo") return cmdUndoResume(p, g, true);
         if (p.command == "resume") return cmdUndoResume(p, g, false);
     } catch (const cli::UsageError& e) {

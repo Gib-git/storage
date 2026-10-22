@@ -6,6 +6,7 @@ qt_add_executable(Storage WIN32 MACOSX_BUNDLE
     BreadcrumbBar.cpp BreadcrumbBar.h
     BackgroundTask.h
     CategoryBar.cpp CategoryBar.h
+    CleanupView.cpp CleanupView.h
     DuplicatesModel.cpp DuplicatesModel.h
     DuplicatesView.cpp DuplicatesView.h
     HistoryView.cpp HistoryView.h

@@ -3,6 +3,7 @@ configure_file(include/storage/core/version.hpp.in
 
 add_library(storagecore STATIC
     src/category.cpp
+    src/cleaner.cpp
     src/format.cpp
     src/index.cpp
     src/journal.cpp

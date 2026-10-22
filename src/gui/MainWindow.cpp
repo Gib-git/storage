@@ -34,6 +34,7 @@
 
 #include "BreadcrumbBar.h"
 #include "CategoryBar.h"
+#include "CleanupView.h"
 #include "DuplicatesView.h"
 #include "HistoryView.h"
 #include "OrganizeView.h"
@@ -106,11 +107,17 @@ void MainWindow::previewOrganizeNow() {
     organize_->previewNow();
 }
 
+void MainWindow::showCleanupNow() {
+    setMode(CleanupMode);
+    cleanup_->ensureAnalyzed();
+}
+
 void MainWindow::setMode(Mode m) {
     modes_->setCurrentIndex(m);
     for (int i = 0; i < ModeCount; ++i) modeActions_[i]->setChecked(i == m);
     if (m == DuplicatesMode) dupes_->setScope(tree_, current_);
     if (m == OrganizeMode) organize_->setScope(tree_, current_);
+    if (m == CleanupMode) cleanup_->setScope(tree_, current_);
     if (m == HistoryMode) history_->reload();
     updateActions();
 }
@@ -177,7 +184,8 @@ void MainWindow::buildActions() {
     QMenu* view = menuBar()->addMenu(tr("&View"));
     // Mode actions are created with the toolbar; add them to the menu once they exist.
     QMetaObject::invokeMethod(this, [this, view] {
-        view->insertActions(view->actions().value(0), {modeActions_[0], modeActions_[1], modeActions_[2], modeActions_[3]});
+        view->insertActions(view->actions().value(0),
+                            {modeActions_[0], modeActions_[1], modeActions_[2], modeActions_[3], modeActions_[4]});
         view->insertSeparator(view->actions().value(ModeCount));
     }, Qt::QueuedConnection);
     QMenu* appearance = view->addMenu(tr("Appearance"));
@@ -211,9 +219,10 @@ void MainWindow::buildUi() {
     tb->setIconSize(QSize(16, 16));
 
     auto* modeGroup = new QActionGroup(this);
-    const QString modeNames[] = {tr("Disk Usage"), tr("Duplicates"), tr("Organize"), tr("History")};
+    const QString modeNames[] = {tr("Disk Usage"), tr("Duplicates"), tr("Organize"), tr("Clean Up"), tr("History")};
     const QKeySequence modeKeys[] = {QKeySequence(Qt::CTRL | Qt::Key_1), QKeySequence(Qt::CTRL | Qt::Key_2),
-                                     QKeySequence(Qt::CTRL | Qt::Key_3), QKeySequence(Qt::CTRL | Qt::Key_4)};
+                                     QKeySequence(Qt::CTRL | Qt::Key_3), QKeySequence(Qt::CTRL | Qt::Key_4),
+                                     QKeySequence(Qt::CTRL | Qt::Key_5)};
     for (int i = 0; i < ModeCount; ++i) {
         modeActions_[i] = new QAction(modeNames[i], this);
         modeActions_[i]->setCheckable(true);
@@ -293,7 +302,16 @@ void MainWindow::buildUi() {
     modes_ = new QStackedWidget(this);
     modes_->addWidget(stack_);
     modes_->addWidget(dupes_);
+    cleanup_ = new CleanupView(this);
+    connect(cleanup_, &CleanupView::message, statusLabel_, &QLabel::setText);
+    connect(cleanup_, &CleanupView::analyzed, this, &MainWindow::cleanupAnalyzed);
+    connect(cleanup_, &CleanupView::filesChanged, this, [this] {
+        actRescan_->setText(tr("Rescan (sizes changed)"));
+        sidebar_->reload();  // free space on drives changed
+    });
+
     modes_->addWidget(organize_);
+    modes_->addWidget(cleanup_);
     modes_->addWidget(history_);
 
     auto* split = new QSplitter(Qt::Horizontal, this);
@@ -575,6 +593,7 @@ void MainWindow::navigate(Node* node, bool record) {
     crumbs_->setNode(node);
     dupes_->setScope(tree_, node);
     organize_->setScope(tree_, node);
+    cleanup_->setScope(tree_, node);
     updateSummary();
     updateActions();
 }
@@ -708,7 +727,7 @@ void MainWindow::changeEvent(QEvent* e) {
 }
 
 void MainWindow::closeEvent(QCloseEvent* e) {
-    if (dupes_->busy() || organize_->busy() || history_->busy()) {
+    if (dupes_->busy() || organize_->busy() || cleanup_->busy() || history_->busy()) {
         const auto answer = QMessageBox::question(
             this, kAppName,
             tr("Storage is still working. Quit anyway?\n\nIt is safe: the current file finishes and the rest can be "

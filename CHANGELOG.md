@@ -2,6 +2,34 @@
 
 All notable changes are listed here. Each phase of the roadmap ships as a release.
 
+## [0.4.0] — Phase 4: Cleanup
+
+### Added
+- **Clean Up view** (Ctrl/⌘+4; History moves to Ctrl/⌘+5)
+  - **System & Apps**: per-OS catalogue of cleanable locations, measured in the background and
+    grouped (System, Apps, Browsers, Developer), each marked **Safe**, **Review** or **Caution**
+    - macOS: app caches, logs, Mail attachment cache, Trash, iPhone/iPad backups, Xcode DerivedData,
+      device support, archives, simulator caches
+    - Windows: user and system temp, crash dumps, INet cache, thumbnail cache, Chrome/Edge caches
+    - Linux: `~/.cache`, thumbnails, Trash
+    - Everywhere: npm, pip, Gradle and Cargo caches, downloads untouched for 6 months
+  - Commands you can copy and run yourself for things that need admin rights or another tool
+    (`apt-get clean`, `journalctl --vacuum-time`, `brew cleanup`, `docker system prune`, DISM…)
+  - **In This Folder**: rebuildable project folders (`node_modules`, `target`, `.venv`,
+    `__pycache__`, …) in projects untouched for months, large files not modified recently,
+    and empty folders
+- **CLI**: `storagectl clean [--all] [--only IDS] [--trash] [--apply]`,
+  `storagectl insights <path> [--older DAYS] [--min-size SIZE]`
+- `Storage --cleanup` opens straight into the measured Clean Up view
+
+### Safety
+- Only items marked *Safe* (caches that rebuild themselves) are ever deleted permanently, and
+  only with the box ticked. Everything else goes to the Trash.
+- Work is journaled per top-level item, so huge caches stay manageable and are shown in History.
+- Folder deletions never follow symbolic links; files that are in use are skipped and reported.
+- Project-junk detection ignores the junk folder's own timestamps and only flags projects whose
+  real files have not changed.
+
 ## [0.3.0] — Phase 3: Organizer
 
 ### Added

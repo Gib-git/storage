@@ -304,6 +304,12 @@ std::error_code LocalFileSystem::removeDir(const std::string& dir) {
     return ec;
 }
 
+std::error_code LocalFileSystem::removeTree(const std::string& dir) {
+    std::error_code ec;
+    std::filesystem::remove_all(fromUtf8(dir), ec);  // removes symlinks themselves, never their targets
+    return ec;
+}
+
 std::error_code LocalFileSystem::trash(const std::string& path, std::string& location) {
     return local::moveToTrash(path, location);
 }

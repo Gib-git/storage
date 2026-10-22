@@ -79,6 +79,8 @@ public:
     virtual std::error_code readHead(const std::string& path, size_t max, std::string& out) = 0;
     // Remove an empty directory (fails if it is not empty).
     virtual std::error_code removeDir(const std::string& dir) = 0;
+    // Remove a directory and everything in it, never following symlinks.
+    virtual std::error_code removeTree(const std::string& dir) = 0;
 };
 
 class LocalFileSystem final : public FileSystem {
@@ -104,6 +106,7 @@ public:
     std::error_code copyNew(const std::string& from, const std::string& to, const std::atomic<bool>* cancel) override;
     std::error_code readHead(const std::string& path, size_t max, std::string& out) override;
     std::error_code removeDir(const std::string& dir) override;
+    std::error_code removeTree(const std::string& dir) override;
 };
 
 // Platform helpers shared by LocalFileSystem and the organizer.

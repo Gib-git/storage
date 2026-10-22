@@ -51,6 +51,8 @@ int main(int argc, char* argv[]) {
     cli.addOption(findDupes);
     QCommandLineOption organizePreview("organize", "After opening the path, preview organizing it with the default rules");
     cli.addOption(organizePreview);
+    QCommandLineOption cleanupOpt("cleanup", "Open the Clean Up view and measure caches and junk");
+    cli.addOption(cleanupOpt);
     QCommandLineOption screenshot("screenshot", "Save a PNG of the window once the path is loaded, then quit", "file");
     cli.addOption(screenshot);
     QCommandLineOption writeIcons("write-icons", "Render the app icon as PNGs into a directory (build tooling)", "dir");
@@ -78,6 +80,8 @@ int main(int argc, char* argv[]) {
             });
         };
         if (cli.isSet(findDupes)) QObject::connect(&w, &MainWindow::duplicatesFound, &w, [shoot](int) { shoot(true); });
+        else if (cli.isSet(cleanupOpt))
+            QObject::connect(&w, &MainWindow::cleanupAnalyzed, &w, [shoot] { shoot(true); });
         else if (cli.isSet(organizePreview))
             QObject::connect(&w, &MainWindow::organizePreviewReady, &w, [shoot](int) { shoot(true); });
         else QObject::connect(&w, &MainWindow::scanFinished, &w, shoot);
@@ -90,6 +94,7 @@ int main(int argc, char* argv[]) {
             else w.previewOrganizeNow();
         });
     }
+    if (cli.isSet(cleanupOpt)) w.showCleanupNow();
     if (!cli.positionalArguments().isEmpty()) w.openPath(cli.positionalArguments().first(), cli.isSet(rescan));
     return QApplication::exec();
 }
