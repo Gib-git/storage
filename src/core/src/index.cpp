@@ -9,7 +9,7 @@ namespace storage {
 
 namespace {
 
-constexpr int kSchemaVersion = 1;
+constexpr int kSchemaVersion = 2;
 
 [[noreturn]] void fail(sqlite3* db, const char* what) {
     throw std::runtime_error(std::string("index: ") + what + ": " + (db ? sqlite3_errmsg(db) : "unknown error"));
@@ -109,6 +109,19 @@ Index::Index(const std::filesystem::path& dbPath) {
                 nlink   INTEGER NOT NULL,
                 flags   INTEGER NOT NULL,
                 PRIMARY KEY(scan_id, id)
+            ) WITHOUT ROWID;
+        )sql");
+    }
+    if (version < 2) {
+        exec(R"sql(
+            CREATE TABLE IF NOT EXISTS hashes(
+                volume  TEXT    NOT NULL,
+                path    TEXT    NOT NULL,
+                size    INTEGER NOT NULL,
+                mtime   INTEGER NOT NULL,
+                partial TEXT,
+                full    TEXT,
+                PRIMARY KEY(volume, path)
             ) WITHOUT ROWID;
         )sql");
     }
@@ -260,6 +273,45 @@ std::unique_ptr<ScanTree> Index::load(int64_t scanId) {
     if (!tree->root) return nullptr;
     tree->finalize();
     return tree;
+}
+
+void Index::lookupHashes(const std::string& volume, std::vector<HashRecord>& records) {
+    Stmt s(db_, "SELECT size,mtime,partial,full FROM hashes WHERE volume=?1 AND path=?2");
+    for (auto& r : records) {
+        s.bind(1, volume).bind(2, r.path);
+        if (s.step() && static_cast<uint64_t>(s.i64(0)) == r.size && s.i64(1) == r.mtime) {
+            if (r.partial.empty()) r.partial = s.text(2);
+            if (r.full.empty()) r.full = s.text(3);
+        }
+        s.reset();
+    }
+}
+
+void Index::storeHashes(const std::string& volume, const std::vector<HashRecord>& records) {
+    if (records.empty()) return;
+    exec("BEGIN IMMEDIATE");
+    try {
+        Stmt s(db_,
+               "INSERT INTO hashes(volume,path,size,mtime,partial,full) VALUES(?1,?2,?3,?4,NULLIF(?5,''),NULLIF(?6,'')) "
+               "ON CONFLICT(volume,path) DO UPDATE SET size=excluded.size, mtime=excluded.mtime, "
+               "partial=COALESCE(excluded.partial, CASE WHEN hashes.size=excluded.size AND hashes.mtime=excluded.mtime "
+               "THEN hashes.partial END), "
+               "full=COALESCE(excluded.full, CASE WHEN hashes.size=excluded.size AND hashes.mtime=excluded.mtime "
+               "THEN hashes.full END)");
+        for (const auto& r : records) {
+            s.bind(1, volume)
+                .bind(2, r.path)
+                .bind(3, static_cast<int64_t>(r.size))
+                .bind(4, r.mtime)
+                .bind(5, r.partial)
+                .bind(6, r.full)
+                .run();
+        }
+        exec("COMMIT");
+    } catch (...) {
+        sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr);
+        throw;
+    }
 }
 
 void Index::remove(int64_t scanId) {

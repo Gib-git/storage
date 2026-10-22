@@ -147,6 +147,16 @@ char LocalFileSystem::separator() const { return '/'; }
 
 #endif
 
+std::string FileSystem::parentOf(const std::string& path) const {
+    size_t end = path.size();
+    while (end > 1 && (path[end - 1] == '/' || path[end - 1] == '\\')) --end;
+    const size_t s = path.find_last_of("/\\", end - 1);
+    if (s == std::string::npos) return {};
+    if (s == 0) return path.substr(0, 1);
+    if (s == 2 && path.size() > 1 && path[1] == ':') return path.substr(0, 3);  // keep the drive root ("C:\\")
+    return path.substr(0, s);
+}
+
 std::string LocalFileSystem::join(const std::string& dir, const std::string& name) const {
     if (dir.empty()) return name;
     const char last = dir.back();

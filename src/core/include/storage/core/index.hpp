@@ -25,6 +25,15 @@ struct ScanInfo {
     bool complete = false;
 };
 
+// Cached content hashes, valid while a file's size and mtime are unchanged.
+struct HashRecord {
+    std::string path;
+    uint64_t size = 0;
+    int64_t mtime = 0;
+    std::string partial;  // empty = unknown
+    std::string full;     // empty = unknown
+};
+
 // Persistent SQLite index of scans. Only the latest scan of each (volume, root)
 // is kept. Not thread-safe: use one Index per thread.
 class Index {
@@ -45,6 +54,10 @@ public:
     int64_t findScan(const std::string& root, const std::string& volume = "local");
 
     void remove(int64_t scanId);
+
+    // Fill `partial`/`full` for every record whose cached size+mtime still match.
+    void lookupHashes(const std::string& volume, std::vector<HashRecord>& records);
+    void storeHashes(const std::string& volume, const std::vector<HashRecord>& records);
 
 private:
     void exec(const char* sql);
