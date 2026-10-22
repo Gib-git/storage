@@ -4,22 +4,37 @@ A small, fast, cross-platform (macOS · Linux · Windows) app that indexes your 
 shows what is using space, finds duplicates, cleans junk and reorganizes folders — **without
 ever losing a file**, even if the power goes out halfway through.
 
-> Status: **Phase 6 — Automation & AI** (see [Roadmap](#roadmap)).
+> Status: **1.0** — all seven roadmap phases are complete (see [Roadmap](#roadmap)).
 
 ## Features
 
-| | Feature | Phase |
-|---|---|---|
-| ✅ | Parallel scanner (hundreds of thousands of files per second on SSDs) | 1 |
-| ✅ | Persistent SQLite index — browse previous scans instantly | 1 |
-| ✅ | Folder size browser: sortable tree, breadcrumbs, treemap | 1 |
-| ✅ | `storagectl` CLI with `--json` output for scripts and AI agents | 1 |
-| ✅ | Duplicate finder (size → partial hash → full hash → optional byte compare) | 2 |
-| ✅ | Trash, hard-link or clone duplicates — journaled, undoable, crash-safe | 2 |
-| ✅ | Rule-based organizer with live preview, crash-safe journal and undo | 3 |
-| ✅ | System & developer cache cleanup, idle `node_modules`, large old files, empty folders | 4 |
-| ✅ | NAS over SSH (uses your existing `ssh` — no extra software); everything works on the NAS | 5 |
-| ✅ | MCP server for Claude, REST API, Ollama-suggested organize rules — always plan → confirm → apply | 6 |
+- **See what's using space.** A fast parallel scanner, a sortable size tree with "% of parent"
+  bars, a nested treemap coloured by file type, and a type breakdown. Saved scans reopen instantly.
+- **Duplicates.** Confirmed by SHA-256 (hardware-accelerated), optionally byte by byte. Keep the
+  oldest, newest or shortest-path copy, then trash the rest, replace them with hard links or
+  copy-on-write clones, or delete them.
+- **Organize.** Rule-based, with templates like `Photos/{year}/{month}` and photo "date taken"
+  from EXIF. Six presets, your own saved rule sets, AI-suggested rules (Ollama), and a live
+  preview before anything moves.
+- **Clean up.** Per-OS caches, logs, Xcode/npm/pip/Gradle/Cargo caches, old downloads, idle
+  `node_modules`, large old files and empty folders. Copyable commands for things that need
+  admin rights.
+- **NAS over SSH.** Every feature works on a NAS, and indexing, hashing and moving run *on* the
+  NAS. It uses your own `ssh` and keys.
+- **Never loses a file.** Write-ahead journal, re-verification before every change, atomic
+  never-overwrite moves, automatic crash recovery, full history and undo.
+- **Automation.** `storagectl` with `--json`, an MCP server for Claude, and a localhost REST API,
+  all with plan → confirm → apply.
+- **Small.** About 1 MB CLI and about 25 MB desktop app. No runtime dependencies.
+
+| Area | Docs |
+|---|---|
+| How safety works | [docs/SAFETY.md](docs/SAFETY.md) |
+| Organize rules & templates | [docs/RULES.md](docs/RULES.md) |
+| Connecting a NAS | [docs/NAS.md](docs/NAS.md) |
+| CLI, REST, MCP (Claude) & Ollama | [docs/API.md](docs/API.md) |
+| Code structure | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| Ideas for the future | [docs/SUGGESTIONS.md](docs/SUGGESTIONS.md) |
 
 ## No dependencies
 
@@ -81,16 +96,16 @@ cmake --preset release && cmake --build --preset release && ctest --preset relea
 
 ## Roadmap
 
-1. **v0.1 Foundation & Disk Usage** — scanner, index, size browser, treemap, CLI
-2. **v0.2 Duplicates** — confirmed duplicate groups, keep-policies, trash/quarantine, hardlink/clone replacement
-3. **v0.3 Organizer** — rules + templates, presets, dry-run diff, journaled moves, recovery, undo
-4. **v0.4 Cleanup** — OS & developer caches, large/old files, empty folders
-5. **v0.5 NAS over SSH** — remote scan/hash/organize executed on the NAS itself
-6. **v0.6 Automation & AI** — REST API, MCP server, Ollama suggestions
-7. **v1.0 Polish** — settings, scheduled scans, file watching, installers
+1. ✅ **v0.1 Foundation & Disk Usage**: scanner, index, size browser, treemap, CLI
+2. ✅ **v0.2 Duplicates**: confirmed duplicate groups, keep rules, trash / hard link / clone, journal & undo
+3. ✅ **v0.3 Organizer**: rules + templates, presets, EXIF dates, live preview, journaled moves
+4. ✅ **v0.4 Cleanup**: OS & developer caches, idle project folders, large old files, empty folders
+5. ✅ **v0.5 NAS over SSH**: remote scan, hash and organize, run on the NAS itself
+6. ✅ **v0.6 Automation & AI**: MCP server for Claude, REST API, Ollama-suggested rules
+7. ✅ **v1.0 Polish**: settings, name filter, auto-refresh of stale scans, in-app API, completion alerts
 
-Writing your own organize rules: [docs/RULES.md](docs/RULES.md). Connecting a NAS: [docs/NAS.md](docs/NAS.md). Automation, Claude & Ollama: [docs/API.md](docs/API.md).
-See [docs/SUGGESTIONS.md](docs/SUGGESTIONS.md) for ideas beyond the roadmap.
+Every phase shipped as a [release](https://github.com/Gib-git/storage/releases). Ideas beyond 1.0 are in
+[docs/SUGGESTIONS.md](docs/SUGGESTIONS.md).
 
 ## License
 

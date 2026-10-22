@@ -125,3 +125,16 @@ TEST_CASE("api: REST server requires the token and serves tools") {
     http::get(base + "/v1/health", res, 1);
     th.join();
 }
+
+TEST_CASE("api: stopping the server wakes the accept loop") {
+    TempTree db;
+    Service svc(db.root() / "index.db", db.root() / "journal.db");
+    auto server = std::make_unique<http::Server>([&](const http::Request& r) { return handleRest(svc, r, "t"); });
+    REQUIRE(!server->listen("127.0.0.1", 0));
+    std::thread th([&] { server->serve(); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    server->stop();
+    th.join();  // must return without any extra connection
+    server.reset();
+    CHECK(true);
+}

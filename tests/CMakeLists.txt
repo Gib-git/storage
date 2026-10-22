@@ -15,3 +15,4 @@ add_executable(storage_tests
 )
 target_link_libraries(storage_tests PRIVATE storage::core)
 add_test(NAME storage_tests COMMAND storage_tests)
+set_tests_properties(storage_tests PROPERTIES TIMEOUT 300)

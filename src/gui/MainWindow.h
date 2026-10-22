@@ -3,12 +3,20 @@
 #include <QMainWindow>
 
 #include <memory>
+#include <thread>
 #include <vector>
 
 #include "storage/core/node.hpp"
 #include "storage/core/scanner.hpp"
 
 class BreadcrumbBar;
+class QLineEdit;
+namespace storage {
+class Service;
+namespace http {
+class Server;
+}
+}  // namespace storage
 class CleanupView;
 class DuplicatesView;
 class HistoryView;
@@ -30,6 +38,7 @@ class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
     explicit MainWindow(QWidget* parent = nullptr);
+    ~MainWindow() override;
 
     // Scan a path (or open its saved scan) — used for command-line arguments.
     void openPath(const QString& path, bool forceRescan);
@@ -84,6 +93,11 @@ private:
     void setThemeMode(int mode);
     void showAbout();
 
+    void showSettings();
+    void applyApiSettings();
+    void stopApi();
+    void notifyDone();
+
     enum Mode { UsageMode = 0, DuplicatesMode = 1, OrganizeMode = 2, CleanupMode = 3, HistoryMode = 4, ModeCount = 5 };
     void setMode(Mode m);
     void recoverInterruptedWork();
@@ -105,6 +119,10 @@ private:
     int returnToMode_ = -1;  // mode to go back to after a scan started from another view
     BreadcrumbBar* crumbs_ = nullptr;
     QLabel* summary_ = nullptr;
+    QLineEdit* filter_ = nullptr;
+    std::unique_ptr<storage::Service> apiService_;
+    std::unique_ptr<storage::http::Server> apiServer_;
+    std::thread apiThread_;
     QTreeView* view_ = nullptr;
     ScanModel* model_ = nullptr;
     QSortFilterProxyModel* proxy_ = nullptr;

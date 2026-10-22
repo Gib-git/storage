@@ -2,6 +2,21 @@
 
 All notable changes are listed here. Each phase of the roadmap ships as a release.
 
+## [1.0.0] — Phase 7: Polish
+
+### Added
+- **Settings** (⌘, / Ctrl+,): appearance, duplicate-search default, Ollama address and model,
+  automatic refresh of saved scans older than N days, and the **local API while the app is open**
+  (with token and a one-click `claude mcp add` command)
+- **Filter by name** in Disk Usage (searches the whole tree, expands matches)
+- Dock bounce / taskbar flash when a long task finishes while Storage is in the background
+- Help menu links to the NAS and automation guides
+- docs/ARCHITECTURE.md; README rewritten for 1.0
+
+### Fixed
+- The embedded API server is joined (not detached) on shutdown, which avoids a use-after-free
+- Test suite has a 5-minute timeout so a hang fails CI quickly
+
 ## [0.6.0] — Phase 6: Automation & AI
 
 ### Added

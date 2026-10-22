@@ -1,6 +1,10 @@
 #include "MainWindow.h"
 
 #include "NasDialog.h"
+#include "SettingsDialog.h"
+#include "storage/core/api.hpp"
+#include "storage/core/http.hpp"
+#include "storage/core/service.hpp"
 
 #include <QAction>
 #include <QActionGroup>
@@ -10,11 +14,14 @@
 #include <QDesktopServices>
 #include <QDir>
 #include <QFileDialog>
+#include <QDateTime>
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QKeySequence>
 #include <QLabel>
+#include <QLineEdit>
+#include <QTimer>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
@@ -77,8 +84,11 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     QSettings settings;
     if (!restoreGeometry(settings.value("window/geometry").toByteArray())) resize(1280, 820);
     updateActions();
+    applyApiSettings();
     QMetaObject::invokeMethod(this, &MainWindow::recoverInterruptedWork, Qt::QueuedConnection);
 }
+
+MainWindow::~MainWindow() { stopApi(); }
 
 void MainWindow::recoverInterruptedWork() {
     // Anything a crash or power cut left half-done is checked against the disk now.
@@ -206,10 +216,18 @@ void MainWindow::buildActions() {
         connect(a, &QAction::triggered, this, [this, mode = mode] { setThemeMode(static_cast<int>(mode)); });
     }
 
+    QAction* prefs = view->addAction(tr("Settings…"), this, &MainWindow::showSettings);
+    prefs->setMenuRole(QAction::PreferencesRole);
+    prefs->setShortcut(QKeySequence::Preferences);
+
     QMenu* help = menuBar()->addMenu(tr("&Help"));
     QAction* about = help->addAction(tr("About Storage"), this, &MainWindow::showAbout);
     about->setMenuRole(QAction::AboutRole);
     help->addAction(tr("Project on GitHub"), this, [] { QDesktopServices::openUrl(QUrl(kHomepage)); });
+    help->addAction(tr("Automation && Claude Setup"), this,
+                    [] { QDesktopServices::openUrl(QUrl(QString(kHomepage) + "/blob/main/docs/API.md")); });
+    help->addAction(tr("Connecting a NAS"), this,
+                    [] { QDesktopServices::openUrl(QUrl(QString(kHomepage) + "/blob/main/docs/NAS.md")); });
 }
 
 void MainWindow::buildUi() {
@@ -426,14 +444,33 @@ QWidget* MainWindow::buildBrowserPage() {
     connect(crumbs_, &BreadcrumbBar::navigate, this, [this](Node* n) { navigate(n); });
     summary_ = new QLabel(header);
     summary_->setObjectName("Summary");
+    filter_ = new QLineEdit(header);
+    filter_->setPlaceholderText(tr("Filter by name"));
+    filter_->setClearButtonEnabled(true);
+    filter_->setMaximumWidth(220);
+    auto* filterTimer = new QTimer(this);
+    filterTimer->setSingleShot(true);
+    filterTimer->setInterval(300);
+    connect(filter_, &QLineEdit::textChanged, filterTimer, qOverload<>(&QTimer::start));
+    connect(filterTimer, &QTimer::timeout, this, [this] {
+        const QString text = filter_->text().trimmed();
+        proxy_->setFilterFixedString(text);
+        if (!text.isEmpty()) view_->expandRecursively(view_->rootIndex(), 3);
+        if (current_) view_->setRootIndex(proxy_->mapFromSource(model_->indexFor(current_)));
+    });
     h->addWidget(crumbs_, 1);
     h->addWidget(summary_);
+    h->addSpacing(8);
+    h->addWidget(filter_);
     v->addWidget(header);
 
     model_ = new ScanModel(this);
     proxy_ = new QSortFilterProxyModel(this);
     proxy_->setSourceModel(model_);
     proxy_->setSortRole(ScanModel::SortRole);
+    proxy_->setRecursiveFilteringEnabled(true);
+    proxy_->setFilterCaseSensitivity(Qt::CaseInsensitive);
+    proxy_->setFilterKeyColumn(ScanModel::Name);
 
     view_ = new QTreeView(page);
     view_->setModel(proxy_);
@@ -627,7 +664,16 @@ void MainWindow::onScanFinished(std::shared_ptr<ScanTree> tree, const QString& e
         returnToMode_ = -1;
     }
     updateActions();
+    notifyDone();
     emit scanFinished(true);
+
+    // A saved scan that is too old is refreshed in the background of the user's choosing.
+    const int days = QSettings().value("scans/autoRescanDays", 0).toInt();
+    const qint64 age = QDateTime::currentSecsSinceEpoch() - tree_->finished;
+    if (days > 0 && age > qint64(days) * 86400 && pendingScanRoot_.isEmpty()) {
+        statusLabel_->setText(tr("This scan is %n day(s) old — refreshing…", nullptr, static_cast<int>(age / 86400)));
+        QTimer::singleShot(0, this, [this] { startScan(qs(tree_->root->name), tree_->volume); });
+    }
 }
 
 // --- Navigation ----------------------------------------------------------------
@@ -788,6 +834,42 @@ void MainWindow::changeEvent(QEvent* e) {
     QMainWindow::changeEvent(e);
 }
 
+void MainWindow::notifyDone() {
+    if (!isActiveWindow()) QApplication::alert(this);  // dock bounce / taskbar flash
+}
+
+void MainWindow::showSettings() {
+    SettingsDialog dlg(this);
+    connect(&dlg, &SettingsDialog::themeChanged, this, &MainWindow::setThemeMode);
+    connect(&dlg, &SettingsDialog::apiSettingsChanged, this, &MainWindow::applyApiSettings);
+    dlg.exec();
+}
+
+void MainWindow::stopApi() {
+    // stop() closes the listening socket, which wakes accept(); the server must outlive the thread.
+    if (apiServer_) apiServer_->stop();
+    if (apiThread_.joinable()) apiThread_.join();
+    apiServer_.reset();
+}
+
+void MainWindow::applyApiSettings() {
+    stopApi();
+    QSettings s;
+    if (!s.value("api/enabled", false).toBool()) return;
+    if (!apiService_) apiService_ = std::make_unique<Service>();
+    const std::string token = apiToken();
+    Service* service = apiService_.get();
+    apiServer_ = std::make_unique<http::Server>([service, token](const http::Request& r) { return handleRest(*service, r, token); });
+    if (auto ec = apiServer_->listen("127.0.0.1", s.value("api/port", 8765).toInt())) {
+        statusLabel_->setText(tr("Could not start the local API: %1").arg(qs(ec.message())));
+        apiServer_.reset();
+        return;
+    }
+    http::Server* server = apiServer_.get();
+    apiThread_ = std::thread([server] { server->serve(); });
+    statusLabel_->setText(tr("Local API running on http://127.0.0.1:%1/v1").arg(server->port()));
+}
+
 void MainWindow::closeEvent(QCloseEvent* e) {
     if (dupes_->busy() || organize_->busy() || cleanup_->busy() || history_->busy()) {
         const auto answer = QMessageBox::question(
@@ -800,6 +882,7 @@ void MainWindow::closeEvent(QCloseEvent* e) {
         }
     }
     scanner_->cancel();
+    stopApi();
     QSettings().setValue("window/geometry", saveGeometry());
     QMainWindow::closeEvent(e);
 }

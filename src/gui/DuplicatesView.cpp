@@ -15,6 +15,7 @@
 #include <QProcess>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QSettings>
 #include <QSortFilterProxyModel>
 #include <QStackedWidget>
 #include <QTimer>
@@ -84,7 +85,7 @@ DuplicatesView::DuplicatesView(QWidget* parent) : QWidget(parent) {
     minSize_->addItem(tr("≥ 1 MB"), QVariant::fromValue<qulonglong>(1024ULL * 1024));
     minSize_->addItem(tr("≥ 10 MB"), QVariant::fromValue<qulonglong>(10ULL * 1024 * 1024));
     minSize_->addItem(tr("≥ 100 MB"), QVariant::fromValue<qulonglong>(100ULL * 1024 * 1024));
-    minSize_->setCurrentIndex(2);
+    minSize_->setCurrentIndex(QSettings().value("dupes/minSizeIndex", 2).toInt());
     minSize_->setToolTip(tr("Ignore files smaller than this"));
     skipHidden_ = new QCheckBox(tr("Skip hidden"), header);
     skipHidden_->setChecked(true);
@@ -444,6 +445,7 @@ void DuplicatesView::onApplied(int64_t batch, ExecResult r) {
     if (r.failed) msg += tr(" · %n failed — see History", nullptr, r.failed);
     emit message(msg);
     if (r.done) emit filesChanged();
+    if (!window()->isActiveWindow()) QApplication::alert(window());
 }
 
 void DuplicatesView::showContextMenu(const QPoint& pos) {

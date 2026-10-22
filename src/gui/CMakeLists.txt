@@ -16,6 +16,7 @@ qt_add_executable(Storage WIN32 MACOSX_BUNDLE
     RuleDialog.cpp RuleDialog.h
     ScanController.cpp ScanController.h
     ScanModel.cpp ScanModel.h
+    SettingsDialog.cpp SettingsDialog.h
     ShareDelegate.cpp ShareDelegate.h
     Sidebar.cpp Sidebar.h
     Theme.cpp Theme.h
