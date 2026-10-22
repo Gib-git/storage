@@ -1,5 +1,7 @@
 add_executable(storage_tests
     main.cpp
+    test_ai.cpp
+    test_api.cpp
     test_cleaner.cpp
     test_duplicates.cpp
     test_executor.cpp

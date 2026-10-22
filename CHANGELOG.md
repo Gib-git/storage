@@ -2,6 +2,22 @@
 
 All notable changes are listed here. Each phase of the roadmap ships as a release.
 
+## [0.6.0] — Phase 6: Automation & AI
+
+### Added
+- **MCP server** (`storagectl mcp`) so Claude Code, Claude Desktop and other MCP clients can use
+  Storage. Twelve tools: scan, du, list_scans, find_duplicates, plan_organize, plan_cleanup,
+  insights, apply_plan, history, undo, presets, nas_list
+- **REST API** (`storagectl serve`): localhost only by default, bearer token kept in the app data
+  folder, same tools as MCP with JSON schemas
+- **Plan → confirm → apply**: tools that change files only return a plan; `apply_plan` needs
+  `confirm: true`, runs a plan at most once, and everything goes through the journal (undoable)
+- **Ollama**: AI-suggested organize rules in the app (*Suggest with AI…*) and the CLI
+  (`organize --ai --goal "…"`). The model gets names, kinds, sizes and dates only, never file
+  contents; answers are schema-constrained, validated, and retried once if invalid
+- Built-in HTTP/1.1 server and client (sockets only, still no dependencies)
+- docs/API.md with Claude Code / Claude Desktop setup
+
 ## [0.5.0] — Phase 5: NAS over SSH
 
 ### Added

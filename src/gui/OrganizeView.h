@@ -49,6 +49,7 @@ private:
     void importPreset();
     void exportPreset();
     void deletePreset();
+    void suggestWithAi();
 
     void preview();
     void showPlan();

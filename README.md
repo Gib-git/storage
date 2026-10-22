@@ -4,7 +4,7 @@ A small, fast, cross-platform (macOS · Linux · Windows) app that indexes your 
 shows what is using space, finds duplicates, cleans junk and reorganizes folders — **without
 ever losing a file**, even if the power goes out halfway through.
 
-> Status: **Phase 5 — NAS over SSH** (see [Roadmap](#roadmap)).
+> Status: **Phase 6 — Automation & AI** (see [Roadmap](#roadmap)).
 
 ## Features
 
@@ -19,7 +19,7 @@ ever losing a file**, even if the power goes out halfway through.
 | ✅ | Rule-based organizer with live preview, crash-safe journal and undo | 3 |
 | ✅ | System & developer cache cleanup, idle `node_modules`, large old files, empty folders | 4 |
 | ✅ | NAS over SSH (uses your existing `ssh` — no extra software); everything works on the NAS | 5 |
-| ⏳ | REST API, MCP server for Claude, Ollama-assisted organizing | 6 |
+| ✅ | MCP server for Claude, REST API, Ollama-suggested organize rules — always plan → confirm → apply | 6 |
 
 ## No dependencies
 
@@ -57,6 +57,8 @@ storagectl clean --apply                               # clean the recommended (
 storagectl insights ~/Projects --older 180             # idle node_modules, big old files
 storagectl nas add home --host 192.168.1.20 --user admin --root /volume1
 storagectl --nas home dupes photos --min-size 1M       # hashing runs on the NAS
+storagectl organize ~/Inbox --ai --goal "invoices by year"   # rules suggested by local Ollama
+claude mcp add storage -- storagectl mcp               # let Claude use Storage (see docs/API.md)
 storagectl history                                     # everything Storage changed
 storagectl undo 3                                      # put batch 3 back
 ```
@@ -87,7 +89,7 @@ cmake --preset release && cmake --build --preset release && ctest --preset relea
 6. **v0.6 Automation & AI** — REST API, MCP server, Ollama suggestions
 7. **v1.0 Polish** — settings, scheduled scans, file watching, installers
 
-Writing your own organize rules: [docs/RULES.md](docs/RULES.md). Connecting a NAS: [docs/NAS.md](docs/NAS.md).
+Writing your own organize rules: [docs/RULES.md](docs/RULES.md). Connecting a NAS: [docs/NAS.md](docs/NAS.md). Automation, Claude & Ollama: [docs/API.md](docs/API.md).
 See [docs/SUGGESTIONS.md](docs/SUGGESTIONS.md) for ideas beyond the roadmap.
 
 ## License

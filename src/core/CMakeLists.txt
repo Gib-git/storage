@@ -2,9 +2,12 @@ configure_file(include/storage/core/version.hpp.in
                ${CMAKE_CURRENT_BINARY_DIR}/include/storage/core/version.hpp @ONLY)
 
 add_library(storagecore STATIC
+    src/ai.cpp
+    src/api.cpp
     src/category.cpp
     src/cleaner.cpp
     src/format.cpp
+    src/http.cpp
     src/index.cpp
     src/journal.cpp
     src/json.cpp
@@ -20,6 +23,7 @@ add_library(storagecore STATIC
     src/paths.cpp
     src/process.cpp
     src/scanner.cpp
+    src/service.cpp
     src/sha256.cpp
     src/volumes.cpp
     src/ssh_fs.cpp
@@ -39,7 +43,7 @@ if(APPLE)
     target_link_libraries(storagecore PUBLIC "-framework Foundation")
 elseif(WIN32)
     target_sources(storagecore PRIVATE src/trash.cpp)
-    target_link_libraries(storagecore PUBLIC ole32 shell32)
+    target_link_libraries(storagecore PUBLIC ole32 shell32 ws2_32)
 else()
     target_sources(storagecore PRIVATE src/trash.cpp)
 endif()

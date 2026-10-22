@@ -25,11 +25,13 @@
 #include <QTimer>
 #include <QToolButton>
 #include <QTreeWidget>
+#include <QSettings>
 #include <QVBoxLayout>
 
 #include <map>
 
 #include "RuleDialog.h"
+#include "storage/core/ai.hpp"
 #include "Theme.h"
 #include "storage/core/format.hpp"
 #include "storage/core/paths.hpp"
@@ -122,6 +124,8 @@ OrganizeView::OrganizeView(QWidget* parent) : QWidget(parent) {
     presetMenuButton->setText(tr("⋯"));
     presetMenuButton->setPopupMode(QToolButton::InstantPopup);
     auto* presetMenu = new QMenu(presetMenuButton);
+    presetMenu->addAction(tr("Suggest with AI (Ollama)…"), this, &OrganizeView::suggestWithAi);
+    presetMenu->addSeparator();
     presetMenu->addAction(tr("Save As…"), this, &OrganizeView::savePreset);
     presetMenu->addAction(tr("Import…"), this, &OrganizeView::importPreset);
     presetMenu->addAction(tr("Export…"), this, &OrganizeView::exportPreset);
@@ -178,6 +182,11 @@ OrganizeView::OrganizeView(QWidget* parent) : QWidget(parent) {
         connect(cb, &QCheckBox::toggled, this, &OrganizeView::rulesEdited);
         lv->addWidget(cb);
     }
+    auto* aiButton = new QPushButton(tr("Suggest with AI…"), left);
+    aiButton->setToolTip(tr("Ask a local Ollama model to propose rules for this folder. Only names, kinds, sizes and dates "
+                            "are sent — never file contents."));
+    connect(aiButton, &QPushButton::clicked, this, &OrganizeView::suggestWithAi);
+    lv->addWidget(aiButton);
     previewButton_ = new QPushButton(tr("Preview"), left);
     previewButton_->setDefault(true);
     connect(previewButton_, &QPushButton::clicked, this, &OrganizeView::preview);
@@ -435,6 +444,71 @@ void OrganizeView::deletePreset() {
         }
     }
     loadPresets();
+}
+
+void OrganizeView::suggestWithAi() {
+    if (!folder_ || busy()) {
+        emit message(tr("Choose a folder first."));
+        return;
+    }
+    QSettings settings;
+    OllamaSettings ai;
+    ai.host = settings.value("ai/host", qs(ai.host)).toString().toStdString();
+    ai.model = settings.value("ai/model", qs(ai.model)).toString().toStdString();
+
+    // Offer the installed models; fall back to free text when Ollama is not reachable.
+    std::vector<std::string> models;
+    ollamaModels(ai, models);
+    QStringList choices;
+    for (const auto& m : models) choices << qs(m);
+    if (!choices.contains(qs(ai.model))) choices.prepend(qs(ai.model));
+    bool ok = false;
+    const QString model = QInputDialog::getItem(this, tr("Suggest with AI"),
+                                                models.empty() ? tr("Ollama model (Ollama does not seem to be running at %1):").arg(qs(ai.host))
+                                                               : tr("Ollama model:"),
+                                                choices, choices.indexOf(qs(ai.model)), true, &ok);
+    if (!ok || model.isEmpty()) return;
+    const QString goal = QInputDialog::getText(this, tr("Suggest with AI"),
+                                               tr("What would you like? (optional — e.g. “photos by year, documents by topic”)"),
+                                               QLineEdit::Normal, {}, &ok);
+    if (!ok) return;
+    ai.model = model.toStdString();
+    settings.setValue("ai/model", model);
+
+    summary_->setText(tr("Asking %1 for rules… (names and sizes only — no file contents are sent)").arg(model));
+    progress_->setRange(0, 0);
+    progress_->show();
+    previewButton_->setEnabled(false);
+    auto keepAlive = tree_;
+    Node* folder = folder_;
+    const std::string goalText = goal.toStdString();
+    task_.start<std::pair<std::shared_ptr<RuleSet>, QString>>(
+        this,
+        [keepAlive, folder, ai, goalText] {
+            try {
+                return std::make_pair(std::make_shared<RuleSet>(suggestRules(ai, *folder, goalText)), QString());
+            } catch (const std::exception& e) {
+                return std::make_pair(std::shared_ptr<RuleSet>(), QString::fromStdString(e.what()));
+            }
+        },
+        [this](std::pair<std::shared_ptr<RuleSet>, QString> result) {
+            progress_->hide();
+            previewButton_->setEnabled(true);
+            if (!result.first) {
+                showPlan();
+                QMessageBox::warning(this, tr("Suggest with AI"), result.second);
+                return;
+            }
+            presets_.push_back(*result.first);
+            presetIsCustom_.push_back(false);
+            loading_ = true;
+            presetBox_->addItem(qs(result.first->name));
+            loading_ = false;
+            presetBox_->setCurrentIndex(presetBox_->count() - 1);
+            emit message(tr("AI suggested %n rule(s) — review them, then Preview. Nothing moves until you click Organize.",
+                            nullptr, static_cast<int>(result.first->rules.size())));
+            preview();
+        });
 }
 
 // --- Preview & apply ----------------------------------------------------------------

@@ -19,6 +19,8 @@
 #define STORAGE_ISATTY(f) isatty(fileno(f))
 #endif
 
+#include "storage/core/ai.hpp"
+#include "storage/core/api.hpp"
 #include "storage/core/cleaner.hpp"
 #include "storage/core/duplicates.hpp"
 #include "storage/core/executor.hpp"
@@ -528,10 +530,22 @@ int cmdPresets(const cli::Parsed& p, const Globals& g) {
 
 int cmdOrganize(const cli::Parsed& p, const Globals& g) {
     const std::string target = resolvePath(g, p.positional[0]);
-    const RuleSet rules = loadRules(p);
+    RuleSet rules;
+    std::unique_ptr<ScanTree> aiTree;
+    if (p.has("ai")) {
+        OllamaSettings ai;
+        ai.host = p.value("ollama", ai.host);
+        ai.model = p.value("model", ai.model);
+        aiTree = runScan(filesystem(g), target, 0, false, g.json);
+        if (!g.json && STORAGE_ISATTY(stderr)) std::fprintf(stderr, "Asking %s for organize rules…\n", ai.model.c_str());
+        rules = suggestRules(ai, *aiTree->root, p.value("goal"));
+        if (!g.json) std::printf("Suggested rules (save with --json, edit, reuse with --rules):\n%s\n\n", rules.toJson().dump(2).c_str());
+    } else {
+        rules = loadRules(p);
+    }
     const std::string dest = p.values.count("dest") ? resolvePath(g, p.value("dest")) : std::string();
 
-    std::unique_ptr<ScanTree> tree = runScan(filesystem(g), target, 0, false, g.json);
+    std::unique_ptr<ScanTree> tree = aiTree ? std::move(aiTree) : runScan(filesystem(g), target, 0, false, g.json);
     FileSystem& fs = filesystem(g);
     const OrganizePlan plan = Organizer(fs, rules).plan(*tree->root, dest);
     const bool apply = p.has("apply");
@@ -770,6 +784,29 @@ int cmdNas(const cli::Parsed& p, const Globals& g) {
     throw cli::UsageError("unknown nas action '" + action + "' (add, list, remove, test)");
 }
 
+
+int cmdServe(const cli::Parsed& p, const Globals& g) {
+    Service service(dbPath(g), journalPath(g));
+    const std::string token = p.values.count("token") ? p.value("token") : apiToken();
+    const std::string host = p.value("host", "127.0.0.1");
+    http::Server server([&](const http::Request& r) { return handleRest(service, r, token); });
+    if (auto ec = server.listen(host, static_cast<int>(p.number("port", 8765))))
+        throw std::runtime_error("cannot listen on " + host + ": " + ec.message());
+    std::printf("Storage API on http://%s:%d/v1  (token: %s)\n", host.c_str(), server.port(), token.c_str());
+    std::printf("Try: curl -s -H 'Authorization: Bearer %s' http://%s:%d/v1/tools\n", token.c_str(), host.c_str(), server.port());
+    if (host != "127.0.0.1" && host != "localhost")
+        std::printf("Warning: listening beyond this computer. Anyone with the token can change files.\n");
+    std::fflush(stdout);
+    server.serve();
+    return 0;
+}
+
+int cmdMcp(const cli::Parsed&, const Globals& g) {
+    Service service(dbPath(g), journalPath(g));
+    runMcpServer(service, std::cin, std::cout);
+    return 0;
+}
+
 int cmdHistory(const cli::Parsed& p, const Globals& g) {
     Journal journal(journalPath(g));
     recoverJournal(journal, g.json);
@@ -867,6 +904,10 @@ int main(int argc, char** argv) {
         .option("preset", 'p', "NAME", "Built-in rule set (default \"By file type\"; see `presets`)")
         .option("rules", 'r', "FILE", "Rule set from a JSON file")
         .option("dest", 0, "DIR", "Put organized files under this folder (default: the folder itself)")
+        .flag("ai", 0, "Ask a local Ollama model to suggest the rules (sends names and sizes, never contents)")
+        .option("goal", 0, "TEXT", "With --ai: what you want, e.g. \"sort camera uploads by year\"")
+        .option("model", 0, "NAME", "With --ai: Ollama model (default llama3.2)")
+        .option("ollama", 0, "URL", "With --ai: Ollama address (default http://localhost:11434)")
         .option("top", 'n', "N", "Moves to print (default 30)")
         .flag("apply", 0, "Actually move the files (journaled, undoable)")
         .flag("yes", 'y', "Do not ask for confirmation");
@@ -893,6 +934,13 @@ int main(int argc, char** argv) {
         .option("port", 0, "PORT", "SSH port")
         .option("key", 0, "FILE", "Private key file (default: your ssh agent/keys)")
         .option("root", 0, "DIR", "Default folder on the NAS, e.g. /volume1 (default /)");
+
+    parser.add("serve", "Run the local REST API (for scripts and agents)")
+        .option("port", 0, "PORT", "Port (default 8765)")
+        .option("host", 0, "ADDR", "Listen address (default 127.0.0.1 — this computer only)")
+        .option("token", 0, "TOKEN", "Bearer token (default: generated and saved in the app data folder)");
+
+    parser.add("mcp", "Run as an MCP server on stdio (for Claude and other MCP clients)");
 
     parser.add("history", "List journaled operations")
         .option("limit", 0, "N", "How many batches (default 30)")
@@ -933,6 +981,8 @@ int main(int argc, char** argv) {
         if (p.command == "clean") return cmdClean(p, g);
         if (p.command == "insights") return cmdInsights(p, g);
         if (p.command == "nas") return cmdNas(p, g);
+        if (p.command == "serve") return cmdServe(p, g);
+        if (p.command == "mcp") return cmdMcp(p, g);
         if (p.command == "undo") return cmdUndoResume(p, g, true);
         if (p.command == "resume") return cmdUndoResume(p, g, false);
     } catch (const cli::UsageError& e) {
